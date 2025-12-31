@@ -7,10 +7,14 @@
 ---                                                                                                                                                                                            
 
 ## Some of my repos are public
-- [skill-gmail-api](https://github.com/tmustier/skill-gmail-api) – Give your agents Gmail
-- [dyson-cli](https://github.com/tmustier/dyson-cli) – Control your Dyson air purifier from the terminal
-- [heypocket-reader](https://github.com/tmustier/heypocket-reader) – Fetch transcripts from your [Pocket](https://heypocket.com) device
+### Devtools
 - [long-task-harness](https://github.com/tmustier/long-task-harness) – Preserve context in long new projects with many Claude Code sessions
+- [python-typing](https://github.com/tmustier/python-typing) – Migrate codebases to strict pyright typing
+### Skills and CLIs
+- [skill-gmail-api](https://github.com/tmustier/skill-gmail-api) – Give your agents Gmail
+- [heypocket-reader](https://github.com/tmustier/heypocket-reader) – Fetch transcripts from your [Pocket](https://heypocket.com) device
+- [dyson-cli](https://github.com/tmustier/dyson-cli) – Control your Dyson air purifier from the terminal
+
 
 ## I'm in other places too
 
