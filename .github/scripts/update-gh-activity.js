@@ -41,7 +41,7 @@ applyEnvFile(".env.local", true);
 
 const token = process.env.GH_ACTIVITY_TOKEN;
 if (!token) {
-  console.error("GH_ACTIVITY_TOKEN is required to read private contributions.");
+  console.error("GH_ACTIVITY_TOKEN is required to read contributions.");
   process.exit(1);
 }
 
@@ -89,48 +89,23 @@ const { from, to, windowLabel } = buildTimeWindow(
   useCalendarMonth
 );
 
-const query = `
-query($login: String!, $from: DateTime!, $to: DateTime!, $maxRepos: Int!) {
-  user(login: $login) {
-    contributionsCollection(from: $from, to: $to) {
-      commitContributionsByRepository(maxRepositories: $maxRepos) {
-        repository { nameWithOwner isPrivate isFork }
-        contributions(last: 100) {
-          nodes { occurredAt commitCount url }
-        }
-      }
-      issueContributionsByRepository(maxRepositories: $maxRepos) {
-        repository { nameWithOwner isPrivate isFork }
-        contributions(last: 100) {
-          nodes { occurredAt issue { url } }
-        }
-      }
-      pullRequestContributionsByRepository(maxRepositories: $maxRepos) {
-        repository { nameWithOwner isPrivate isFork }
-        contributions(last: 100) {
-          nodes { occurredAt pullRequest { url createdAt closedAt mergedAt } }
-        }
-      }
-      pullRequestReviewContributionsByRepository(maxRepositories: $maxRepos) {
-        repository { nameWithOwner isPrivate isFork }
-        contributions(last: 100) {
-          nodes { occurredAt pullRequestReview { url } pullRequest { url } }
-        }
-      }
+// ============ REST API helpers ============
+
+async function restGet(endpoint, params = {}) {
+  const url = new URL(endpoint, "https://api.github.com");
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      url.searchParams.set(key, String(value));
     }
   }
-}
-`;
 
-async function graphql(queryText, variables) {
-  const response = await fetch("https://api.github.com/graphql", {
-    method: "POST",
+  const response = await fetch(url.toString(), {
     headers: {
-      Authorization: `bearer ${token}`,
-      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
       "User-Agent": "tmustier-profile-activity",
+      "X-GitHub-Api-Version": "2022-11-28",
     },
-    body: JSON.stringify({ query: queryText, variables }),
   });
 
   if (!response.ok) {
@@ -138,13 +113,90 @@ async function graphql(queryText, variables) {
     throw new Error(`GitHub API error ${response.status}: ${body}`);
   }
 
-  const payload = await response.json();
-  if (payload.errors && payload.errors.length) {
-    throw new Error(JSON.stringify(payload.errors));
+  return {
+    data: await response.json(),
+    headers: response.headers,
+  };
+}
+
+async function restGetAllPages(endpoint, params = {}, maxPages = 10) {
+  const results = [];
+  let page = 1;
+
+  while (page <= maxPages) {
+    const { data, headers } = await restGet(endpoint, { ...params, per_page: 100, page });
+    if (Array.isArray(data)) {
+      results.push(...data);
+      if (data.length < 100) break;
+    } else {
+      results.push(data);
+      break;
+    }
+
+    const linkHeader = headers.get("link");
+    if (!linkHeader || !linkHeader.includes('rel="next"')) {
+      break;
+    }
+    page++;
   }
 
-  return payload.data;
+  return results;
 }
+
+async function searchAllPages(queryString, maxPages = 10) {
+  const results = [];
+  let page = 1;
+
+  while (page <= maxPages) {
+    const { data } = await restGet("/search/issues", { q: queryString, per_page: 100, page });
+    if (data.items && Array.isArray(data.items)) {
+      results.push(...data.items);
+      if (data.items.length < 100) break;
+    } else {
+      break;
+    }
+    page++;
+  }
+
+  return results;
+}
+
+async function searchCommitsAllPages(queryString, maxPages = 10) {
+  const results = [];
+  let page = 1;
+
+  while (page <= maxPages) {
+    const response = await fetch(
+      `https://api.github.com/search/commits?q=${encodeURIComponent(queryString)}&per_page=100&page=${page}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "tmustier-profile-activity",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      }
+    );
+
+    if (!response.ok) {
+      // Search may fail for rate limits or other reasons, just return what we have
+      break;
+    }
+
+    const data = await response.json();
+    if (data.items && Array.isArray(data.items)) {
+      results.push(...data.items);
+      if (data.items.length < 100) break;
+    } else {
+      break;
+    }
+    page++;
+  }
+
+  return results;
+}
+
+// ============ Date helpers (unchanged) ============
 
 function getZonedDateParts(date, timeZone) {
   const formatter = new Intl.DateTimeFormat("en-CA", {
@@ -245,37 +297,22 @@ function buildTimeWindow(now, timeZone, windowDays, useMonth) {
   };
 }
 
+function formatDateForSearch(date) {
+  return date.toISOString().split("T")[0];
+}
+
+// ============ Label helpers (unchanged) ============
+
 function labelFromIssueUrl(url) {
-  if (!url) {
-    return "issue";
-  }
+  if (!url) return "issue";
   const match = url.match(/\/issues\/(\d+)/);
-  if (!match) {
-    return "issue";
-  }
-  return `issue #${match[1]}`;
+  return match ? `issue #${match[1]}` : "issue";
 }
 
 function labelFromPullUrl(url) {
-  if (!url) {
-    return "PR";
-  }
+  if (!url) return "PR";
   const match = url.match(/\/pull\/(\d+)/);
-  if (!match) {
-    return "PR";
-  }
-  return `PR #${match[1]}`;
-}
-
-function labelFromReviewUrl(url) {
-  if (!url) {
-    return "review";
-  }
-  const match = url.match(/\/pull\/(\d+)/);
-  if (!match) {
-    return "review";
-  }
-  return `review PR #${match[1]}`;
+  return match ? `PR #${match[1]}` : "PR";
 }
 
 function labelFromKind(kind, url) {
@@ -284,22 +321,12 @@ function labelFromKind(kind, url) {
       return labelFromIssueUrl(url);
     case "pr":
       return labelFromPullUrl(url);
-    case "review":
-      return labelFromReviewUrl(url);
     default:
       return "activity";
   }
 }
 
-function formatDateInZone(date, timeZone) {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  return formatter.format(date);
-}
+// ============ Table builder (unchanged) ============
 
 function buildTable(other, own, windowLabel, ownerLogin) {
   const lines = [
@@ -348,20 +375,36 @@ function buildTable(other, own, windowLabel, ownerLogin) {
   return lines.join("\n");
 }
 
-function mergeContribution(map, repo, count, occurredAt, url, kind) {
-  if (!repo?.nameWithOwner || count <= 0) {
+// ============ Contribution tracking ============
+
+function isQuickClosedPullRequest(pr) {
+  if (!pr || !pr.created_at || !pr.closed_at) {
+    return false;
+  }
+  if (pr.merged_at) {
+    return false;
+  }
+  const created = new Date(pr.created_at).getTime();
+  const closed = new Date(pr.closed_at).getTime();
+  if (!Number.isFinite(created) || !Number.isFinite(closed)) {
+    return false;
+  }
+  return closed - created <= quickCloseMs;
+}
+
+function mergeContribution(map, repoName, count, occurredAt, url, kind) {
+  if (!repoName || count <= 0) {
     return;
   }
 
-  const name = repo.nameWithOwner;
-  if (excludedRepos.has(name.toLowerCase())) {
+  if (excludedRepos.has(repoName.toLowerCase())) {
     return;
   }
 
-  let entry = map.get(name);
+  let entry = map.get(repoName);
   if (!entry) {
     entry = {
-      name,
+      name: repoName,
       total: 0,
       lastAt: null,
       lastUrl: null,
@@ -370,13 +413,13 @@ function mergeContribution(map, repo, count, occurredAt, url, kind) {
       repoLatestCommitUrl: null,
       userLatestCommitUrl: null,
     };
-    map.set(name, entry);
+    map.set(repoName, entry);
   }
 
   entry.total += count;
 
   if (occurredAt) {
-    const date = new Date(occurredAt);
+    const date = occurredAt instanceof Date ? occurredAt : new Date(occurredAt);
     if (!entry.lastAt || date > entry.lastAt) {
       entry.lastAt = date;
       entry.lastUrl = url || entry.lastUrl;
@@ -385,139 +428,16 @@ function mergeContribution(map, repo, count, occurredAt, url, kind) {
   }
 }
 
-function addCommitContributions(map, items) {
-  for (const item of items || []) {
-    if (item.repository?.isPrivate || item.repository?.isFork) {
-      continue;
-    }
-    const nodes = (item.contributions && item.contributions.nodes) || [];
-    let count = 0;
-    let lastAt = null;
-    let lastUrl = null;
-
-    for (const node of nodes) {
-      count += node.commitCount || 0;
-      if (node.occurredAt) {
-        const date = getZonedEndOfDayUtc(new Date(node.occurredAt), timeZone);
-        if (!lastAt || date > lastAt) {
-          lastAt = date;
-          lastUrl = node.url || lastUrl;
-        }
-      }
-    }
-
-    mergeContribution(map, item.repository, count, lastAt, lastUrl, "commit");
-  }
-}
-
-function addIssueContributions(map, items) {
-  for (const item of items || []) {
-    if (item.repository?.isPrivate || item.repository?.isFork) {
-      continue;
-    }
-    const nodes = (item.contributions && item.contributions.nodes) || [];
-    let count = 0;
-    let lastAt = null;
-    let lastUrl = null;
-
-    for (const node of nodes) {
-      if (!node.issue || !node.issue.url) {
-        continue;
-      }
-      count += 1;
-      if (node.occurredAt) {
-        const date = new Date(node.occurredAt);
-        if (!lastAt || date > lastAt) {
-          lastAt = date;
-          lastUrl = node.issue.url;
-        }
-      }
-    }
-
-    mergeContribution(map, item.repository, count, lastAt, lastUrl, "issue");
-  }
-}
-
-function isQuickClosedPullRequest(pr) {
-  if (!pr || !pr.createdAt || !pr.closedAt) {
+async function isRepoFork(repoName) {
+  try {
+    const { data } = await restGet(`/repos/${repoName}`);
+    return data.fork === true;
+  } catch (e) {
     return false;
   }
-  if (pr.mergedAt) {
-    return false;
-  }
-  const created = new Date(pr.createdAt).getTime();
-  const closed = new Date(pr.closedAt).getTime();
-  if (!Number.isFinite(created) || !Number.isFinite(closed)) {
-    return false;
-  }
-  return closed - created <= quickCloseMs;
 }
 
-function addPullRequestContributions(map, items) {
-  for (const item of items || []) {
-    if (item.repository?.isPrivate || item.repository?.isFork) {
-      continue;
-    }
-    const nodes = (item.contributions && item.contributions.nodes) || [];
-    let count = 0;
-    let lastAt = null;
-    let lastUrl = null;
-
-    for (const node of nodes) {
-      const pr = node.pullRequest;
-      if (!pr || !pr.url) {
-        continue;
-      }
-      if (isQuickClosedPullRequest(pr)) {
-        continue;
-      }
-      count += 1;
-      if (node.occurredAt) {
-        const date = new Date(node.occurredAt);
-        if (!lastAt || date > lastAt) {
-          lastAt = date;
-          lastUrl = pr.url;
-        }
-      }
-    }
-
-    mergeContribution(map, item.repository, count, lastAt, lastUrl, "pr");
-  }
-}
-
-function addReviewContributions(map, items) {
-  for (const item of items || []) {
-    if (item.repository?.isPrivate || item.repository?.isFork) {
-      continue;
-    }
-    const nodes = (item.contributions && item.contributions.nodes) || [];
-    let count = 0;
-    let lastAt = null;
-    let lastUrl = null;
-
-    for (const node of nodes) {
-      const url =
-        (node.pullRequestReview && node.pullRequestReview.url) ||
-        (node.pullRequest && node.pullRequest.url) ||
-        null;
-      if (!url) {
-        continue;
-      }
-      count += 1;
-      if (node.occurredAt) {
-        const date = new Date(node.occurredAt);
-        if (!lastAt || date > lastAt) {
-          lastAt = date;
-          lastUrl = url;
-        }
-      }
-    }
-
-    mergeContribution(map, item.repository, count, lastAt, lastUrl, "review");
-  }
-}
-
-function splitSections(map, ownerLogin) {
+async function splitSections(map, ownerLogin) {
   const own = [];
   const other = [];
   const prefix = `${ownerLogin.toLowerCase()}/`;
@@ -534,6 +454,15 @@ function splitSections(map, ownerLogin) {
     }
   }
 
+  // Filter out forks from "other people's repos" section
+  const filteredOther = [];
+  for (const item of other) {
+    const isFork = await isRepoFork(item.name);
+    if (!isFork) {
+      filteredOther.push(item);
+    }
+  }
+
   const sorter = (a, b) => {
     const aTime = a.lastAt ? a.lastAt.getTime() : 0;
     const bTime = b.lastAt ? b.lastAt.getTime() : 0;
@@ -547,422 +476,349 @@ function splitSections(map, ownerLogin) {
   };
 
   own.sort(sorter);
-  other.sort(sorter);
+  filteredOther.sort(sorter);
 
-  return { own, other };
+  return { own, other: filteredOther };
 }
+
+// ============ REST API data fetchers ============
 
 async function fetchViewer() {
-  const data = await graphql("query { viewer { id login name } }");
-  return data.viewer;
+  const { data } = await restGet("/user");
+  return { id: data.id, login: data.login, name: data.name };
 }
 
-async function fetchPrivateRepos() {
-  const repos = [];
-  let cursor = null;
-
-  while (true) {
-    const data = await graphql(
-      `query($after: String) {
-        viewer {
-          repositories(
-            first: 100,
-            after: $after,
-            privacy: PRIVATE,
-            orderBy: { field: PUSHED_AT, direction: DESC }
-          ) {
-            nodes { nameWithOwner isFork }
-            pageInfo { hasNextPage endCursor }
-          }
-        }
-      }`,
-      { after: cursor }
-    );
-
-    const connection = data.viewer.repositories;
-    for (const repo of connection.nodes || []) {
-      if (!repo || !repo.nameWithOwner) {
-        continue;
-      }
-      if (repo.isFork) {
-        continue;
-      }
-      if (excludedRepos.has(repo.nameWithOwner.toLowerCase())) {
-        continue;
-      }
-      repos.push(repo.nameWithOwner);
-    }
-
-    if (!connection.pageInfo || !connection.pageInfo.hasNextPage) {
-      break;
-    }
-    cursor = connection.pageInfo.endCursor;
-  }
-
-  return repos;
-}
-
-function chunkArray(items, size) {
-  const result = [];
-  for (let i = 0; i < items.length; i += size) {
-    result.push(items.slice(i, i + size));
-  }
-  return result;
-}
-
-async function fetchRepoCommitMeta(repoNames) {
-  const meta = new Map();
-  const unique = Array.from(new Set(repoNames));
-
-  for (const chunk of chunkArray(unique, 20)) {
-    const selections = [];
-    const aliasMap = new Map();
-
-    chunk.forEach((fullName, index) => {
-      const [owner, name] = fullName.split("/");
-      if (!owner || !name) {
-        return;
-      }
-      const alias = `repo${index}`;
-      aliasMap.set(alias, fullName);
-      selections.push(
-        `${alias}: repository(owner: "${owner}", name: "${name}") { defaultBranchRef { target { ... on Commit { history(first: 1) { totalCount nodes { url } } } } } }`
-      );
-    });
-
-    if (!selections.length) {
-      continue;
-    }
-
-    const data = await graphql(`query { ${selections.join("\n")} }`);
-    for (const [alias, fullName] of aliasMap.entries()) {
-      const history = data[alias]?.defaultBranchRef?.target?.history;
-      const totalCount = history?.totalCount;
-      if (!Number.isFinite(totalCount)) {
-        continue;
-      }
-      const latestUrl = history?.nodes?.[0]?.url || null;
-      meta.set(fullName, { totalCount, latestUrl });
-    }
-  }
-
-  return meta;
-}
-
-function matchesCoAuthor(message, loginName, displayName) {
-  if (!message) {
-    return false;
-  }
-  const lower = message.toLowerCase();
-  if (!lower.includes("co-authored-by:")) {
-    return false;
-  }
-  const login = loginName.toLowerCase();
-  if (lower.includes(login)) {
-    return true;
-  }
-  if (displayName) {
-    const nameLower = displayName.toLowerCase();
-    if (lower.includes(nameLower)) {
-      return true;
-    }
-  }
-  const noreply = `${login}@users.noreply.github.com`;
-  return lower.includes(noreply);
-}
-
-async function findLatestUserCommit(repoName, loginName, displayName, sinceIso) {
-  const [owner, name] = repoName.split("/");
-  if (!owner || !name) {
-    return null;
-  }
-
-  const params = new URLSearchParams({
-    since: sinceIso,
-    per_page: "100",
+async function fetchUserRepos() {
+  // Get all repos user has push access to (owner, collaborator, org member)
+  const repos = await restGetAllPages("/user/repos", {
+    affiliation: "owner,collaborator,organization_member",
+    sort: "pushed",
+    direction: "desc",
   });
 
-  for (let page = 1; page <= 10; page += 1) {
-    params.set("page", String(page));
-    const url = `https://api.github.com/repos/${owner}/${name}/commits?${params}`;
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+  return repos
+    .filter((repo) => !repo.fork)
+    .filter((repo) => !excludedRepos.has(repo.full_name.toLowerCase()))
+    .map((repo) => ({
+      nameWithOwner: repo.full_name,
+      isPrivate: repo.private,
+    }));
+}
+
+async function fetchCommitsViaSearch(userLogin, fromDate, toDate) {
+  // Search commits by author in the date range
+  // Note: Search only covers repos the token has access to
+  const fromStr = formatDateForSearch(fromDate);
+  const toStr = formatDateForSearch(toDate);
+  const query = `author:${userLogin} committer-date:${fromStr}..${toStr}`;
+
+  const commits = await searchCommitsAllPages(query);
+
+  // Group by repo, tracking which commit SHAs we've seen to dedupe across forks
+  const seenShas = new Set();
+  const byRepo = new Map();
+
+  for (const commit of commits) {
+    const repoName = commit.repository?.full_name;
+    if (!repoName) continue;
+
+    // Skip forks - commits in forks are duplicates from upstream
+    if (commit.repository?.fork) continue;
+
+    // Skip if we've already counted this commit SHA (can appear in multiple forks)
+    const sha = commit.sha;
+    if (seenShas.has(sha)) continue;
+    seenShas.add(sha);
+
+    if (!byRepo.has(repoName)) {
+      byRepo.set(repoName, { count: 0, lastAt: null, lastUrl: null });
+    }
+    const entry = byRepo.get(repoName);
+    entry.count += 1;
+
+    const date = new Date(commit.commit?.author?.date || commit.commit?.committer?.date);
+    if (!entry.lastAt || date > entry.lastAt) {
+      entry.lastAt = date;
+      entry.lastUrl = commit.html_url;
+    }
+  }
+
+  return byRepo;
+}
+
+async function fetchIssuesViaSearch(userLogin, fromDate, toDate) {
+  const fromStr = formatDateForSearch(fromDate);
+  const toStr = formatDateForSearch(toDate);
+  const query = `author:${userLogin} type:issue created:${fromStr}..${toStr}`;
+
+  const issues = await searchAllPages(query);
+
+  // Group by repo
+  const byRepo = new Map();
+  for (const issue of issues) {
+    const repoUrl = issue.repository_url;
+    if (!repoUrl) continue;
+
+    // Extract repo name from URL: https://api.github.com/repos/owner/name
+    const match = repoUrl.match(/\/repos\/([^/]+\/[^/]+)$/);
+    if (!match) continue;
+    const repoName = match[1];
+
+    if (!byRepo.has(repoName)) {
+      byRepo.set(repoName, { count: 0, lastAt: null, lastUrl: null });
+    }
+    const entry = byRepo.get(repoName);
+    entry.count += 1;
+
+    const date = new Date(issue.created_at);
+    if (!entry.lastAt || date > entry.lastAt) {
+      entry.lastAt = date;
+      entry.lastUrl = issue.html_url;
+    }
+  }
+
+  return byRepo;
+}
+
+async function fetchPRsViaSearch(userLogin, fromDate, toDate) {
+  const fromStr = formatDateForSearch(fromDate);
+  const toStr = formatDateForSearch(toDate);
+  const query = `author:${userLogin} type:pr created:${fromStr}..${toStr}`;
+
+  const prs = await searchAllPages(query);
+
+  // Group by repo
+  const byRepo = new Map();
+  for (const pr of prs) {
+    // Skip quick-closed PRs
+    if (isQuickClosedPullRequest(pr)) continue;
+
+    const repoUrl = pr.repository_url;
+    if (!repoUrl) continue;
+
+    const match = repoUrl.match(/\/repos\/([^/]+\/[^/]+)$/);
+    if (!match) continue;
+    const repoName = match[1];
+
+    if (!byRepo.has(repoName)) {
+      byRepo.set(repoName, { count: 0, lastAt: null, lastUrl: null });
+    }
+    const entry = byRepo.get(repoName);
+    entry.count += 1;
+
+    const date = new Date(pr.created_at);
+    if (!entry.lastAt || date > entry.lastAt) {
+      entry.lastAt = date;
+      entry.lastUrl = pr.html_url;
+    }
+  }
+
+  return byRepo;
+}
+
+async function fetchRepoCommits(repoName, userLogin, fromDate, toDate) {
+  const [owner, repo] = repoName.split("/");
+  if (!owner || !repo) return { count: 0, lastAt: null, lastUrl: null };
+
+  try {
+    const commits = await restGetAllPages(`/repos/${owner}/${repo}/commits`, {
+      author: userLogin,
+      since: fromDate.toISOString(),
+      until: toDate.toISOString(),
     });
 
+    if (!commits.length) {
+      return { count: 0, lastAt: null, lastUrl: null };
+    }
+
+    let lastAt = null;
+    let lastUrl = null;
+
+    for (const commit of commits) {
+      const date = new Date(commit.commit?.author?.date || commit.commit?.committer?.date);
+      if (!lastAt || date > lastAt) {
+        lastAt = date;
+        lastUrl = commit.html_url;
+      }
+    }
+
+    return { count: commits.length, lastAt, lastUrl };
+  } catch (e) {
+    // Repo might not be accessible
+    return { count: 0, lastAt: null, lastUrl: null };
+  }
+}
+
+async function fetchRepoCommitTotal(repoName) {
+  const [owner, repo] = repoName.split("/");
+  if (!owner || !repo) return { totalCount: null, latestUrl: null };
+
+  try {
+    // Get the default branch first
+    const { data: repoData } = await restGet(`/repos/${owner}/${repo}`);
+    const defaultBranch = repoData.default_branch || "main";
+
+    // Get commit count using the commits endpoint with per_page=1
+    // We'll use the Link header to find the last page
+    const response = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/commits?sha=${defaultBranch}&per_page=1`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "User-Agent": "tmustier-profile-activity",
+        },
+      }
+    );
+
     if (!response.ok) {
-      return null;
+      return { totalCount: null, latestUrl: null };
     }
 
     const commits = await response.json();
-    if (!Array.isArray(commits) || commits.length === 0) {
-      break;
+    const latestUrl = commits[0]?.html_url || null;
+
+    // Parse Link header for total count
+    const linkHeader = response.headers.get("link");
+    let totalCount = 1;
+
+    if (linkHeader) {
+      const lastMatch = linkHeader.match(/page=(\d+)>; rel="last"/);
+      if (lastMatch) {
+        totalCount = parseInt(lastMatch[1], 10);
+      }
     }
+
+    return { totalCount, latestUrl };
+  } catch (e) {
+    return { totalCount: null, latestUrl: null };
+  }
+}
+
+async function findLatestUserCommit(repoName, userLogin, sinceDate) {
+  const [owner, repo] = repoName.split("/");
+  if (!owner || !repo) return null;
+
+  try {
+    const commits = await restGetAllPages(`/repos/${owner}/${repo}/commits`, {
+      since: sinceDate.toISOString(),
+    }, 5);
 
     for (const commit of commits) {
       const authorLogin = commit.author?.login;
       const committerLogin = commit.committer?.login;
-      if (authorLogin === loginName || committerLogin === loginName) {
-        return commit.html_url || null;
+      if (authorLogin === userLogin || committerLogin === userLogin) {
+        return commit.html_url;
       }
+
+      // Check co-author
       const message = commit.commit?.message || "";
-      if (matchesCoAuthor(message, loginName, displayName)) {
-        return commit.html_url || null;
+      if (message.toLowerCase().includes("co-authored-by:") &&
+          message.toLowerCase().includes(userLogin.toLowerCase())) {
+        return commit.html_url;
       }
     }
-  }
 
-  return null;
-}
-
-async function searchRepoItems(owner, name, loginName, startDate, endDate, type) {
-  const nodes = [];
-  let cursor = null;
-  const typeClause = type === "pr" ? "type:pr" : "type:issue";
-  const queryText = `repo:${owner}/${name} ${typeClause} author:${loginName} created:${startDate}..${endDate}`;
-
-  while (true) {
-    const data = await graphql(
-      `query($query: String!, $after: String) {
-        search(query: $query, type: ISSUE, first: 50, after: $after) {
-          pageInfo { hasNextPage endCursor }
-          nodes {
-            ... on Issue { createdAt url }
-            ... on PullRequest { createdAt closedAt mergedAt url }
-          }
-        }
-      }`,
-      { query: queryText, after: cursor }
-    );
-
-    const result = data.search;
-    for (const node of result.nodes || []) {
-      nodes.push(node);
-    }
-
-    if (!result.pageInfo.hasNextPage) {
-      break;
-    }
-    cursor = result.pageInfo.endCursor;
-  }
-
-  return nodes;
-}
-
-async function fetchPrivateRepoActivity(
-  repoName,
-  viewerId,
-  loginName,
-  startDate,
-  endDate
-) {
-  const [owner, name] = repoName.split("/");
-  if (!owner || !name) {
+    return null;
+  } catch (e) {
     return null;
   }
-
-  const repoData = await graphql(
-    `query($owner: String!, $name: String!, $from: GitTimestamp!, $to: GitTimestamp!, $authorId: ID!) {
-      repository(owner: $owner, name: $name) {
-        nameWithOwner
-        defaultBranchRef {
-          target {
-            ... on Commit {
-              history(first: 1, since: $from, until: $to, author: { id: $authorId }) {
-                totalCount
-                nodes { committedDate url }
-              }
-            }
-          }
-        }
-      }
-    }`,
-    {
-      owner,
-      name,
-      from: from.toISOString(),
-      to: to.toISOString(),
-      authorId: viewerId,
-    }
-  );
-
-  const history = repoData.repository?.defaultBranchRef?.target?.history;
-
-  const commitCount = history ? history.totalCount || 0 : 0;
-  const commitNode = history && history.nodes && history.nodes[0];
-  const commitLastAt = commitNode ? new Date(commitNode.committedDate) : null;
-  const commitLastUrl = commitNode ? commitNode.url : null;
-
-  const issueNodes = await searchRepoItems(
-    owner,
-    name,
-    loginName,
-    startDate,
-    endDate,
-    "issue"
-  );
-  let issueCount = 0;
-  let issueLastAt = null;
-  let issueLastUrl = null;
-
-  for (const node of issueNodes) {
-    if (!node || !node.url || !node.createdAt) {
-      continue;
-    }
-    issueCount += 1;
-    const date = new Date(node.createdAt);
-    if (!issueLastAt || date > issueLastAt) {
-      issueLastAt = date;
-      issueLastUrl = node.url;
-    }
-  }
-
-  const prNodes = await searchRepoItems(
-    owner,
-    name,
-    loginName,
-    startDate,
-    endDate,
-    "pr"
-  );
-  let prCount = 0;
-  let prLastAt = null;
-  let prLastUrl = null;
-
-  for (const node of prNodes) {
-    if (!node || !node.url || !node.createdAt) {
-      continue;
-    }
-    if (isQuickClosedPullRequest(node)) {
-      continue;
-    }
-    prCount += 1;
-    const date = new Date(node.createdAt);
-    if (!prLastAt || date > prLastAt) {
-      prLastAt = date;
-      prLastUrl = node.url;
-    }
-  }
-
-  return {
-    repository: { nameWithOwner: repoName },
-    commit: { total: commitCount, lastAt: commitLastAt, lastUrl: commitLastUrl },
-    issue: { total: issueCount, lastAt: issueLastAt, lastUrl: issueLastUrl },
-    pr: { total: prCount, lastAt: prLastAt, lastUrl: prLastUrl },
-  };
 }
 
-async function main() {
-  const viewer = await fetchViewer();
-  const data = await graphql(query, {
-    login,
-    from: from.toISOString(),
-    to: to.toISOString(),
-    maxRepos: 100,
-  });
+// ============ Main ============
 
-  const collection = data?.user?.contributionsCollection;
-  if (!collection) {
-    throw new Error("No contributions data returned by GitHub.");
-  }
+async function main() {
+  console.log("Fetching user info...");
+  const viewer = await fetchViewer();
+  console.log(`User: ${viewer.login}`);
+
+  const fromStr = formatDateForSearch(from);
+  const toStr = formatDateForSearch(to);
+  console.log(`Date range: ${fromStr} to ${toStr}`);
 
   const repoMap = new Map();
 
-  addCommitContributions(repoMap, collection.commitContributionsByRepository);
-  addIssueContributions(repoMap, collection.issueContributionsByRepository);
-  addPullRequestContributions(repoMap, collection.pullRequestContributionsByRepository);
-  addReviewContributions(
-    repoMap,
-    collection.pullRequestReviewContributionsByRepository
+  // Fetch all user repos (for private repo detection)
+  console.log("Fetching user repos...");
+  const userRepos = await fetchUserRepos();
+  const privateRepoNames = new Set(
+    userRepos.filter((r) => r.isPrivate).map((r) => r.nameWithOwner)
   );
+  console.log(`Found ${userRepos.length} repos (${privateRepoNames.size} private)`);
 
-  const privateRepos = await fetchPrivateRepos();
-  const startDate = formatDateInZone(from, timeZone);
-  const endDate = formatDateInZone(to, timeZone);
+  // Fetch commits via search (covers public repos and private repos token has access to)
+  console.log("Searching commits...");
+  const commitsByRepo = await fetchCommitsViaSearch(viewer.login, from, to);
+  for (const [repoName, data] of commitsByRepo) {
+    mergeContribution(repoMap, repoName, data.count, data.lastAt, data.lastUrl, "commit");
+  }
+  console.log(`Found commits in ${commitsByRepo.size} repos`);
 
-  for (const repoName of privateRepos) {
-    const activity = await fetchPrivateRepoActivity(
-      repoName,
-      viewer.id,
-      viewer.login,
-      startDate,
-      endDate
-    );
-    if (!activity) {
-      continue;
-    }
+  // Fetch issues via search
+  console.log("Searching issues...");
+  const issuesByRepo = await fetchIssuesViaSearch(viewer.login, from, to);
+  for (const [repoName, data] of issuesByRepo) {
+    mergeContribution(repoMap, repoName, data.count, data.lastAt, data.lastUrl, "issue");
+  }
+  console.log(`Found issues in ${issuesByRepo.size} repos`);
 
-    if (activity.commit.total > 0) {
-      mergeContribution(
-        repoMap,
-        activity.repository,
-        activity.commit.total,
-        activity.commit.lastAt,
-        activity.commit.lastUrl,
-        "commit"
-      );
-    }
-    if (activity.issue.total > 0) {
-      mergeContribution(
-        repoMap,
-        activity.repository,
-        activity.issue.total,
-        activity.issue.lastAt,
-        activity.issue.lastUrl,
-        "issue"
-      );
-    }
-    if (activity.pr.total > 0) {
-      mergeContribution(
-        repoMap,
-        activity.repository,
-        activity.pr.total,
-        activity.pr.lastAt,
-        activity.pr.lastUrl,
-        "pr"
-      );
+  // Fetch PRs via search
+  console.log("Searching PRs...");
+  const prsByRepo = await fetchPRsViaSearch(viewer.login, from, to);
+  for (const [repoName, data] of prsByRepo) {
+    mergeContribution(repoMap, repoName, data.count, data.lastAt, data.lastUrl, "pr");
+  }
+  console.log(`Found PRs in ${prsByRepo.size} repos`);
+
+  // For private repos not caught by search, fetch commits directly
+  console.log("Checking private repos for additional commits...");
+  for (const repoName of privateRepoNames) {
+    if (!repoMap.has(repoName) || repoMap.get(repoName).lastKind !== "commit") {
+      const data = await fetchRepoCommits(repoName, viewer.login, from, to);
+      if (data.count > 0) {
+        mergeContribution(repoMap, repoName, data.count, data.lastAt, data.lastUrl, "commit");
+      }
     }
   }
 
+  // Get commit totals for repos with commit activity
+  console.log("Fetching commit totals...");
   const commitEntries = Array.from(repoMap.values()).filter(
     (entry) => entry.lastKind === "commit"
   );
-  const commitRepos = commitEntries.map((entry) => entry.name);
-  const commitMeta = await fetchRepoCommitMeta(commitRepos);
-  for (const [name, data] of commitMeta.entries()) {
-    const entry = repoMap.get(name);
-    if (entry) {
-      entry.repoCommitTotal = data.totalCount;
-      entry.repoLatestCommitUrl = data.latestUrl;
+
+  for (const entry of commitEntries) {
+    const meta = await fetchRepoCommitTotal(entry.name);
+    if (meta.totalCount != null) {
+      entry.repoCommitTotal = meta.totalCount;
+      entry.repoLatestCommitUrl = meta.latestUrl;
     }
   }
 
+  // For other people's repos, find the user's latest commit URL
+  console.log("Finding user commit URLs for other repos...");
   const otherCommitRepos = commitEntries
     .map((entry) => entry.name)
-    .filter((name) => !name.startsWith(`${login}/`));
-  const sinceIso = from.toISOString();
+    .filter((name) => !name.toLowerCase().startsWith(`${login.toLowerCase()}/`));
+
   for (const repoName of otherCommitRepos) {
     const entry = repoMap.get(repoName);
-    if (!entry) {
-      continue;
-    }
-    const latestUrl = await findLatestUserCommit(
-      repoName,
-      viewer.login,
-      viewer.name,
-      sinceIso
-    );
+    if (!entry) continue;
+    const latestUrl = await findLatestUserCommit(repoName, viewer.login, from);
     if (latestUrl) {
       entry.userLatestCommitUrl = latestUrl;
     }
   }
 
-  const { own, other } = splitSections(repoMap, login);
+  // Split and sort (filters forks from other repos)
+  console.log("Filtering forks from other repos...");
+  const { own, other } = await splitSections(repoMap, login);
+  console.log(`Results: ${own.length} own repos, ${other.length} other repos`);
 
+  // Generate table
   const generated = buildTable(other, own, windowLabel, login);
 
+  // Update README
   const readmePath = path.join(process.cwd(), "README.md");
   const readme = fs.readFileSync(readmePath, "utf8");
   const startMarker = "<!-- GH-ACTIVITY-START -->";
@@ -981,6 +837,7 @@ async function main() {
     readme.slice(endIndex + endMarker.length);
 
   fs.writeFileSync(readmePath, updated);
+  console.log("README updated.");
 }
 
 main().catch((error) => {
