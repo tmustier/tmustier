@@ -1,6 +1,12 @@
 const fs = require("fs");
 const path = require("path");
 
+const {
+  getZonedDateParts,
+  getZonedEndOfDay,
+  getZonedStartOfDay,
+} = require("./lib/date-utils");
+
 // ============ Configuration ============
 
 function loadEnvFiles() {
@@ -54,6 +60,10 @@ const config = {
     const mins = Number.parseInt(process.env.GH_ACTIVITY_PR_QUICK_CLOSE_MINUTES || "30", 10);
     return Number.isFinite(mins) && mins >= 0 ? mins * 60 * 1000 : 30 * 60 * 1000;
   })(),
+  maxPages: (() => {
+    const pages = Number.parseInt(process.env.GH_ACTIVITY_MAX_PAGES || "10", 10);
+    return Number.isFinite(pages) && pages > 0 ? pages : 10;
+  })(),
 };
 
 // Validate required config
@@ -95,7 +105,7 @@ async function restGet(endpoint, params = {}) {
   return { data: await response.json(), headers: response.headers };
 }
 
-async function restGetPaginated(endpoint, params = {}, maxPages = 10) {
+async function restGetPaginated(endpoint, params = {}, maxPages = config.maxPages) {
   const results = [];
   
   for (let page = 1; page <= maxPages; page++) {
@@ -116,7 +126,7 @@ async function restGetPaginated(endpoint, params = {}, maxPages = 10) {
   return results;
 }
 
-async function searchPaginated(endpoint, query, maxPages = 10) {
+async function searchPaginated(endpoint, query, maxPages = config.maxPages) {
   const results = [];
   
   for (let page = 1; page <= maxPages; page++) {
@@ -125,7 +135,10 @@ async function searchPaginated(endpoint, query, maxPages = 10) {
       if (!data.items?.length) break;
       results.push(...data.items);
       if (data.items.length < 100) break;
-    } catch {
+    } catch (error) {
+      console.warn(
+        `Search failed for ${endpoint} (page ${page}): ${error.message || error}`
+      );
       break; // Search may fail due to rate limits
     }
   }
@@ -134,43 +147,6 @@ async function searchPaginated(endpoint, query, maxPages = 10) {
 }
 
 // ============ Date Utilities ============
-
-function getZonedDateParts(date, tz) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit"
-  }).formatToParts(date);
-  const get = (type) => Number.parseInt(parts.find((p) => p.type === type).value, 10);
-  return { year: get("year"), month: get("month"), day: get("day") };
-}
-
-function getOffsetMinutes(date, tz) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz, timeZoneName: "shortOffset", hour: "2-digit", hour12: false
-  }).formatToParts(date);
-  const tzPart = parts.find((p) => p.type === "timeZoneName")?.value || "";
-  const match = tzPart.match(/GMT([+-]\d{1,2})(?::?(\d{2}))?/);
-  if (!match) return 0;
-  const sign = match[1].startsWith("-") ? -1 : 1;
-  return sign * (Math.abs(parseInt(match[1], 10)) * 60 + (parseInt(match[2], 10) || 0));
-}
-
-function getZonedStartOfDay(date, tz) {
-  const { year, month, day } = getZonedDateParts(date, tz);
-  const baseUtc = Date.UTC(year, month - 1, day);
-  let utcMs = baseUtc;
-  for (let i = 0; i < 2; i++) {
-    const adjusted = baseUtc - getOffsetMinutes(new Date(utcMs), tz) * 60000;
-    if (adjusted === utcMs) break;
-    utcMs = adjusted;
-  }
-  return new Date(utcMs);
-}
-
-function getZonedEndOfDay(date, tz) {
-  const { year, month, day } = getZonedDateParts(date, tz);
-  const nextDay = new Date(Date.UTC(year, month - 1, day + 1, 12));
-  return new Date(getZonedStartOfDay(nextDay, tz).getTime() - 1);
-}
 
 function buildTimeWindow(now, tz, windowDays, useMonth) {
   const todayEnd = getZonedEndOfDay(now, tz);
@@ -283,7 +259,10 @@ async function fetchRepoCommits(repoName, userLogin, from, to) {
       }
     }
     return { count: commits.length, lastAt, lastUrl };
-  } catch {
+  } catch (error) {
+    console.warn(
+      `Failed to fetch commits for ${repoName}: ${error.message || error}`
+    );
     return null;
   }
 }

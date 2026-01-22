@@ -2,36 +2,45 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const envFiles = [".env", ".env.local"];
-for (const fileName of envFiles) {
-  const filePath = path.join(process.cwd(), fileName);
-  if (!fs.existsSync(filePath)) {
-    continue;
-  }
-  const content = fs.readFileSync(filePath, "utf8");
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
+const { getZonedDateParts, getZonedStartOfDay } = require("./lib/date-utils");
+
+function loadEnvFiles() {
+  const initialKeys = new Set(Object.keys(process.env));
+
+  for (const [file, allowOverride] of [[".env", false], [".env.local", true]]) {
+    const filePath = path.join(process.cwd(), file);
+    if (!fs.existsSync(filePath)) {
       continue;
     }
-    const eqIndex = line.indexOf("=");
-    if (eqIndex === -1) {
-      continue;
+    const content = fs.readFileSync(filePath, "utf8");
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) {
+        continue;
+      }
+      const eqIndex = line.indexOf("=");
+      if (eqIndex === -1) {
+        continue;
+      }
+      const key = line.slice(0, eqIndex).trim();
+      let value = line.slice(eqIndex + 1).trim();
+      if (!key) {
+        continue;
+      }
+      const quoted =
+        (value.startsWith("\"") && value.endsWith("\"")) ||
+        (value.startsWith("'") && value.endsWith("'"));
+      if (quoted) {
+        value = value.slice(1, -1);
+      }
+      if (!process.env[key] || (allowOverride && !initialKeys.has(key))) {
+        process.env[key] = value;
+      }
     }
-    const key = line.slice(0, eqIndex).trim();
-    let value = line.slice(eqIndex + 1).trim();
-    if (!key || process.env[key]) {
-      continue;
-    }
-    const quoted =
-      (value.startsWith("\"") && value.endsWith("\"")) ||
-      (value.startsWith("'") && value.endsWith("'"));
-    if (quoted) {
-      value = value.slice(1, -1);
-    }
-    process.env[key] = value;
   }
 }
+
+loadEnvFiles();
 
 const token = process.env.GH_ACTIVITY_TOKEN;
 const login =
@@ -44,6 +53,13 @@ if (!token || !login) {
 }
 
 const timeZone = process.env.GH_ACTIVITY_TIMEZONE || "UTC";
+const privateCommitConcurrency = (() => {
+  const value = Number.parseInt(
+    process.env.TOKEN_USAGE_PRIVATE_CONCURRENCY || "4",
+    10
+  );
+  return Number.isFinite(value) && value > 0 ? value : 4;
+})();
 
 const snapshotPath =
   process.env.CODEXBAR_SNAPSHOT_PATH ||
@@ -101,69 +117,35 @@ async function graphql(queryText, variables) {
   return payload.data;
 }
 
-function getZonedDateParts(date, zone) {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: zone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  const parts = formatter.formatToParts(date);
-  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return {
-    year: Number.parseInt(lookup.year, 10),
-    month: Number.parseInt(lookup.month, 10),
-    day: Number.parseInt(lookup.day, 10),
-  };
-}
-
-function getOffsetMinutes(date, zone) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: zone,
-    timeZoneName: "shortOffset",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-  const parts = formatter.formatToParts(date);
-  const tzPart = parts.find((part) => part.type === "timeZoneName");
-  if (!tzPart || !tzPart.value) {
-    return 0;
-  }
-  const match = tzPart.value.match(/GMT([+-]\d{1,2})(?::?(\d{2}))?/);
-  if (!match) {
-    return 0;
-  }
-  const sign = match[1].startsWith("-") ? -1 : 1;
-  const hours = Math.abs(Number.parseInt(match[1], 10));
-  const minutes = match[2] ? Number.parseInt(match[2], 10) : 0;
-  return sign * (hours * 60 + minutes);
-}
-
-function getZonedStartOfDayUtc(date, zone) {
-  const { year, month, day } = getZonedDateParts(date, zone);
-  const baseUtc = Date.UTC(year, month - 1, day, 0, 0, 0, 0);
-  let utcMs = baseUtc;
-  for (let i = 0; i < 2; i += 1) {
-    const offsetMinutes = getOffsetMinutes(new Date(utcMs), zone);
-    const adjusted = baseUtc - offsetMinutes * 60 * 1000;
-    if (adjusted === utcMs) {
-      break;
-    }
-    utcMs = adjusted;
-  }
-  return new Date(utcMs);
-}
-
 function startOfYearUtc(now, zone) {
   const { year } = getZonedDateParts(now, zone);
   const probe = new Date(Date.UTC(year, 0, 1, 12, 0, 0));
-  return getZonedStartOfDayUtc(probe, zone);
+  return getZonedStartOfDay(probe, zone);
 }
 
 function rollingWindowStart(now, days) {
   return new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let index = 0;
+
+  const runners = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (true) {
+        const current = index++;
+        if (current >= items.length) {
+          return;
+        }
+        results[current] = await worker(items[current], current);
+      }
+    }
+  );
+
+  await Promise.all(runners);
+  return results;
 }
 
 async function fetchViewer() {
@@ -272,15 +254,20 @@ async function countCommits(fromDate, toDate, viewer, privateRepos) {
   const toIso = toDate.toISOString();
 
   const publicCount = await fetchPublicCommitCount(fromIso, toIso);
-  let privateCount = 0;
-  for (const repoName of privateRepos) {
-    privateCount += await fetchPrivateCommitCount(
-      repoName,
-      viewer.id,
-      fromIso,
-      toIso
-    );
+
+  if (!privateRepos.length) {
+    return publicCount;
   }
+
+  const privateCounts = await mapWithConcurrency(
+    privateRepos,
+    privateCommitConcurrency,
+    (repoName) => fetchPrivateCommitCount(repoName, viewer.id, fromIso, toIso)
+  );
+  const privateCount = privateCounts.reduce(
+    (sum, value) => sum + (Number(value) || 0),
+    0
+  );
 
   return publicCount + privateCount;
 }
