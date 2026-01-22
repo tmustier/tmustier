@@ -18,14 +18,14 @@
 - [python-typing](https://github.com/tmustier/python-typing) – Migrate codebases to strict pyright typing
 - [pi-extensions](https://github.com/tmustier/pi-extensions) – Extensions for the [Pi coding agent](https://github.com/badlogic/pi-mono)
   - [ralph-wiggum](https://github.com/tmustier/pi-extensions/tree/main/ralph-wiggum) – Run arbitrarily-long tasks without diluting model attention. 'Flat' version without subagents
-  - [tab-status](https://github.com/tmustier/pi-extensions/tree/main/tab-status) – Manage as many parallel sessions as your mind can handle. Terminal tab indicators for ✅done/🚧stuck/🛑timed out
+  - [tab-status](https://github.com/tmustier/pi-extensions/tree/main/tab-status) – Manage as many parallel sessions as your mind can handle. Terminal tab indicators for ✅done/🚧stuck/🛑timed out. Currently set up for one session/tab.
   - [arcade](https://github.com/tmustier/pi-extensions/tree/main/arcade) – 👾 sPIce-invaders, 👻 picman, 🏓 ping, 🧩 tetris, 🍄 not-mario (ASCII)
   - [agent-guidance](https://github.com/tmustier/pi-extensions/tree/main/agent-guidance) – Switch between Claude/Codex/Gemini with model-specific guidance (CLAUDE.md, CODEX.md, GEMINI.md)
   - / commands
     - [/usage](https://github.com/tmustier/pi-extensions/tree/main/usage-extension) - get your Pi metrics per provider+model
     - [/code](https://github.com/tmustier/pi-extensions/tree/main/code-actions) - copy/insert code snippets from your agent
     - [/raw-paste](https://github.com/tmustier/pi-extensions/tree/main/raw-paste) - paste editable text, not `[paste #1 +21 lines]`
-- [codex-tab](https://github.com/tmustier/codex-tab) – See when Codex sessions are running / done / 🚧 right in the terminal tab titles (macOS, Swift/libproc; cross-platform Python version: [codex-title](https://github.com/tmustier/codex-title))
+    - [/files](https://github.com/tmustier/pi-extensions/tree/main/files-widget) - experimental terminal file browser with diffs and line selection
 ### Skills
 - [web-search](https://github.com/tmustier/web-search) – Replace one-off search/scrape scripts with a single agent-friendly toolkit (fallbacks + evidence-first, safer defaults)
 - [skill-gmail-api](https://github.com/tmustier/skill-gmail-api) – Give your agents Gmail
