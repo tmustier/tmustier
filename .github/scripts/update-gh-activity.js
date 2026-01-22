@@ -1,107 +1,86 @@
 const fs = require("fs");
 const path = require("path");
 
-const initialEnvKeys = new Set(Object.keys(process.env));
+// ============ Configuration ============
 
-function applyEnvFile(fileName, allowOverride) {
-  const filePath = path.join(process.cwd(), fileName);
-  if (!fs.existsSync(filePath)) {
-    return;
-  }
-
-  const content = fs.readFileSync(filePath, "utf8");
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-    const eqIndex = line.indexOf("=");
-    if (eqIndex === -1) {
-      continue;
-    }
-    const key = line.slice(0, eqIndex).trim();
-    let value = line.slice(eqIndex + 1).trim();
-    if (!key) {
-      continue;
-    }
-    const quoted =
-      (value.startsWith("\"") && value.endsWith("\"")) ||
-      (value.startsWith("'") && value.endsWith("'"));
-    if (quoted) {
-      value = value.slice(1, -1);
-    }
-    if (!process.env[key] || (allowOverride && !initialEnvKeys.has(key))) {
-      process.env[key] = value;
+function loadEnvFiles() {
+  const initialKeys = new Set(Object.keys(process.env));
+  
+  for (const [file, allowOverride] of [[".env", false], [".env.local", true]]) {
+    const filePath = path.join(process.cwd(), file);
+    if (!fs.existsSync(filePath)) continue;
+    
+    for (const line of fs.readFileSync(filePath, "utf8").split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      
+      const eqIndex = trimmed.indexOf("=");
+      if (eqIndex === -1) continue;
+      
+      const key = trimmed.slice(0, eqIndex).trim();
+      let value = trimmed.slice(eqIndex + 1).trim();
+      if (!key) continue;
+      
+      // Strip quotes
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      
+      if (!process.env[key] || (allowOverride && !initialKeys.has(key))) {
+        process.env[key] = value;
+      }
     }
   }
 }
 
-applyEnvFile(".env", false);
-applyEnvFile(".env.local", true);
+loadEnvFiles();
 
-const token = process.env.GH_ACTIVITY_TOKEN;
-if (!token) {
-  console.error("GH_ACTIVITY_TOKEN is required to read contributions.");
+const config = {
+  token: process.env.GH_ACTIVITY_TOKEN,
+  login: process.env.GH_ACTIVITY_USER || process.env.GITHUB_REPOSITORY_OWNER || "",
+  days: Number.parseInt(process.env.GH_ACTIVITY_DAYS || "30", 10),
+  timeZone: process.env.GH_ACTIVITY_TIMEZONE || "UTC",
+  useCalendarMonth: ["1", "true", "yes"].includes(
+    (process.env.GH_ACTIVITY_CALENDAR_MONTH || "").toLowerCase()
+  ),
+  excludedRepos: new Set(
+    (process.env.GH_ACTIVITY_EXCLUDE || "")
+      .split(/[\n,]/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+  ),
+  quickCloseMs: (() => {
+    const mins = Number.parseInt(process.env.GH_ACTIVITY_PR_QUICK_CLOSE_MINUTES || "30", 10);
+    return Number.isFinite(mins) && mins >= 0 ? mins * 60 * 1000 : 30 * 60 * 1000;
+  })(),
+};
+
+// Validate required config
+if (!config.token) {
+  console.error("GH_ACTIVITY_TOKEN is required.");
   process.exit(1);
 }
-
-const login =
-  process.env.GH_ACTIVITY_USER ||
-  process.env.GITHUB_REPOSITORY_OWNER ||
-  "";
-if (!login) {
+if (!config.login) {
   console.error("GH_ACTIVITY_USER or GITHUB_REPOSITORY_OWNER is required.");
   process.exit(1);
 }
-
-const days = Number.parseInt(process.env.GH_ACTIVITY_DAYS || "30", 10);
-if (!Number.isFinite(days) || days <= 0) {
+if (!Number.isFinite(config.days) || config.days <= 0) {
   console.error("GH_ACTIVITY_DAYS must be a positive integer.");
   process.exit(1);
 }
 
-const excludedRepos = new Set(
-  (process.env.GH_ACTIVITY_EXCLUDE || "")
-    .split(/[\n,]/)
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean)
-);
-
-const quickCloseMinutes = Number.parseInt(
-  process.env.GH_ACTIVITY_PR_QUICK_CLOSE_MINUTES || "30",
-  10
-);
-const quickCloseMs =
-  Number.isFinite(quickCloseMinutes) && quickCloseMinutes >= 0
-    ? quickCloseMinutes * 60 * 1000
-    : 30 * 60 * 1000;
-
-const timeZone = process.env.GH_ACTIVITY_TIMEZONE || "UTC";
-const useCalendarMonth = ["1", "true", "yes"].includes(
-  String(process.env.GH_ACTIVITY_CALENDAR_MONTH || "").toLowerCase()
-);
-
-const now = new Date();
-const { from, to, windowLabel } = buildTimeWindow(
-  now,
-  timeZone,
-  days,
-  useCalendarMonth
-);
-
-// ============ REST API helpers ============
+// ============ REST API Client ============
 
 async function restGet(endpoint, params = {}) {
   const url = new URL(endpoint, "https://api.github.com");
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null) {
-      url.searchParams.set(key, String(value));
-    }
+    if (value != null) url.searchParams.set(key, String(value));
   }
 
   const response = await fetch(url.toString(), {
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${config.token}`,
       Accept: "application/vnd.github+json",
       "User-Agent": "tmustier-profile-activity",
       "X-GitHub-Api-Version": "2022-11-28",
@@ -110,225 +89,378 @@ async function restGet(endpoint, params = {}) {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`GitHub API error ${response.status}: ${body}`);
+    throw new Error(`GitHub API ${response.status}: ${body}`);
   }
 
-  return {
-    data: await response.json(),
-    headers: response.headers,
-  };
+  return { data: await response.json(), headers: response.headers };
 }
 
-async function restGetAllPages(endpoint, params = {}, maxPages = 10) {
+async function restGetPaginated(endpoint, params = {}, maxPages = 10) {
   const results = [];
-  let page = 1;
-
-  while (page <= maxPages) {
+  
+  for (let page = 1; page <= maxPages; page++) {
     const { data, headers } = await restGet(endpoint, { ...params, per_page: 100, page });
-    if (Array.isArray(data)) {
-      results.push(...data);
-      if (data.length < 100) break;
-    } else {
+    
+    if (!Array.isArray(data)) {
       results.push(data);
       break;
     }
-
-    const linkHeader = headers.get("link");
-    if (!linkHeader || !linkHeader.includes('rel="next"')) {
-      break;
-    }
-    page++;
+    
+    results.push(...data);
+    if (data.length < 100) break;
+    
+    const link = headers.get("link");
+    if (!link?.includes('rel="next"')) break;
   }
 
   return results;
 }
 
-async function searchAllPages(queryString, maxPages = 10) {
+async function searchPaginated(endpoint, query, maxPages = 10) {
   const results = [];
-  let page = 1;
-
-  while (page <= maxPages) {
-    const { data } = await restGet("/search/issues", { q: queryString, per_page: 100, page });
-    if (data.items && Array.isArray(data.items)) {
+  
+  for (let page = 1; page <= maxPages; page++) {
+    try {
+      const { data } = await restGet(endpoint, { q: query, per_page: 100, page });
+      if (!data.items?.length) break;
       results.push(...data.items);
       if (data.items.length < 100) break;
-    } else {
-      break;
+    } catch {
+      break; // Search may fail due to rate limits
     }
-    page++;
   }
 
   return results;
 }
 
-async function searchCommitsAllPages(queryString, maxPages = 10) {
-  const results = [];
-  let page = 1;
+// ============ Date Utilities ============
 
-  while (page <= maxPages) {
-    const response = await fetch(
-      `https://api.github.com/search/commits?q=${encodeURIComponent(queryString)}&per_page=100&page=${page}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "tmustier-profile-activity",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-      }
-    );
-
-    if (!response.ok) {
-      // Search may fail for rate limits or other reasons, just return what we have
-      break;
-    }
-
-    const data = await response.json();
-    if (data.items && Array.isArray(data.items)) {
-      results.push(...data.items);
-      if (data.items.length < 100) break;
-    } else {
-      break;
-    }
-    page++;
-  }
-
-  return results;
+function getZonedDateParts(date, tz) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(date);
+  const get = (type) => Number.parseInt(parts.find((p) => p.type === type).value, 10);
+  return { year: get("year"), month: get("month"), day: get("day") };
 }
 
-// ============ Date helpers (unchanged) ============
-
-function getZonedDateParts(date, timeZone) {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  const parts = formatter.formatToParts(date);
-  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return {
-    year: Number.parseInt(lookup.year, 10),
-    month: Number.parseInt(lookup.month, 10),
-    day: Number.parseInt(lookup.day, 10),
-  };
-}
-
-function getOffsetMinutes(date, timeZone) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    timeZoneName: "shortOffset",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-  const parts = formatter.formatToParts(date);
-  const tzPart = parts.find((part) => part.type === "timeZoneName");
-  if (!tzPart || !tzPart.value) {
-    return 0;
-  }
-  const match = tzPart.value.match(/GMT([+-]\d{1,2})(?::?(\d{2}))?/);
-  if (!match) {
-    return 0;
-  }
+function getOffsetMinutes(date, tz) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, timeZoneName: "shortOffset", hour: "2-digit", hour12: false
+  }).formatToParts(date);
+  const tzPart = parts.find((p) => p.type === "timeZoneName")?.value || "";
+  const match = tzPart.match(/GMT([+-]\d{1,2})(?::?(\d{2}))?/);
+  if (!match) return 0;
   const sign = match[1].startsWith("-") ? -1 : 1;
-  const hours = Math.abs(Number.parseInt(match[1], 10));
-  const minutes = match[2] ? Number.parseInt(match[2], 10) : 0;
-  return sign * (hours * 60 + minutes);
+  return sign * (Math.abs(parseInt(match[1], 10)) * 60 + (parseInt(match[2], 10) || 0));
 }
 
-function getZonedStartOfDayUtc(date, timeZone) {
-  const { year, month, day } = getZonedDateParts(date, timeZone);
-  const baseUtc = Date.UTC(year, month - 1, day, 0, 0, 0, 0);
+function getZonedStartOfDay(date, tz) {
+  const { year, month, day } = getZonedDateParts(date, tz);
+  const baseUtc = Date.UTC(year, month - 1, day);
   let utcMs = baseUtc;
-  for (let i = 0; i < 2; i += 1) {
-    const offsetMinutes = getOffsetMinutes(new Date(utcMs), timeZone);
-    const adjusted = baseUtc - offsetMinutes * 60 * 1000;
-    if (adjusted === utcMs) {
-      break;
-    }
+  for (let i = 0; i < 2; i++) {
+    const adjusted = baseUtc - getOffsetMinutes(new Date(utcMs), tz) * 60000;
+    if (adjusted === utcMs) break;
     utcMs = adjusted;
   }
   return new Date(utcMs);
 }
 
-function getZonedStartOfNextDayUtc(date, timeZone) {
-  const { year, month, day } = getZonedDateParts(date, timeZone);
-  const probe = new Date(Date.UTC(year, month - 1, day + 1, 12, 0, 0));
-  return getZonedStartOfDayUtc(probe, timeZone);
+function getZonedEndOfDay(date, tz) {
+  const { year, month, day } = getZonedDateParts(date, tz);
+  const nextDay = new Date(Date.UTC(year, month - 1, day + 1, 12));
+  return new Date(getZonedStartOfDay(nextDay, tz).getTime() - 1);
 }
 
-function getZonedEndOfDayUtc(date, timeZone) {
-  const nextStart = getZonedStartOfNextDayUtc(date, timeZone);
-  return new Date(nextStart.getTime() - 1);
-}
-
-function daysInMonth(year, month) {
-  return new Date(Date.UTC(year, month, 0)).getUTCDate();
-}
-
-function buildTimeWindow(now, timeZone, windowDays, useMonth) {
-  const todayEnd = getZonedEndOfDayUtc(now, timeZone);
-  const { year, month, day } = getZonedDateParts(now, timeZone);
+function buildTimeWindow(now, tz, windowDays, useMonth) {
+  const todayEnd = getZonedEndOfDay(now, tz);
+  const { year, month, day } = getZonedDateParts(now, tz);
 
   if (useMonth) {
-    let targetYear = year;
-    let targetMonth = month - 1;
-    if (targetMonth < 1) {
-      targetMonth = 12;
-      targetYear -= 1;
-    }
-    const maxDay = daysInMonth(targetYear, targetMonth);
-    const targetDay = Math.min(day, maxDay);
-    const probe = new Date(Date.UTC(targetYear, targetMonth - 1, targetDay, 12, 0, 0));
-    return {
-      from: getZonedStartOfDayUtc(probe, timeZone),
-      to: todayEnd,
-      windowLabel: "last month",
-    };
+    let [tYear, tMonth] = [year, month - 1];
+    if (tMonth < 1) { tMonth = 12; tYear--; }
+    const maxDay = new Date(Date.UTC(tYear, tMonth, 0)).getUTCDate();
+    const probe = new Date(Date.UTC(tYear, tMonth - 1, Math.min(day, maxDay), 12));
+    return { from: getZonedStartOfDay(probe, tz), to: todayEnd, windowLabel: "last month" };
   }
 
-  const probe = new Date(Date.UTC(year, month - 1, day - (windowDays - 1), 12, 0, 0));
+  const probe = new Date(Date.UTC(year, month - 1, day - (windowDays - 1), 12));
+  return { from: getZonedStartOfDay(probe, tz), to: todayEnd, windowLabel: `last ${windowDays} days` };
+}
+
+const formatDate = (d) => d.toISOString().split("T")[0];
+
+// ============ Data Fetchers ============
+
+async function fetchUserLogin() {
+  const { data } = await restGet("/user");
+  return data.login;
+}
+
+async function fetchUserRepos() {
+  const repos = await restGetPaginated("/user/repos", {
+    affiliation: "owner,collaborator,organization_member",
+    sort: "pushed",
+    direction: "desc",
+  });
+
+  return repos
+    .filter((r) => !r.fork && !config.excludedRepos.has(r.full_name.toLowerCase()))
+    .map((r) => ({ name: r.full_name, isPrivate: r.private }));
+}
+
+async function fetchSearchItems(userLogin, from, to, type) {
+  const query = type === "commit"
+    ? `author:${userLogin} committer-date:${formatDate(from)}..${formatDate(to)}`
+    : `author:${userLogin} type:${type} created:${formatDate(from)}..${formatDate(to)}`;
+
+  const endpoint = type === "commit" ? "/search/commits" : "/search/issues";
+  const items = await searchPaginated(endpoint, query);
+
+  // Group by repo
+  const seenShas = new Set();
+  const byRepo = new Map();
+
+  for (const item of items) {
+    // Extract repo name
+    let repoName, isFork;
+    if (type === "commit") {
+      repoName = item.repository?.full_name;
+      isFork = item.repository?.fork;
+    } else {
+      const match = item.repository_url?.match(/\/repos\/([^/]+\/[^/]+)$/);
+      repoName = match?.[1];
+      isFork = false; // Issues/PRs don't have fork info, filtered later
+    }
+    if (!repoName || isFork) continue;
+
+    // Dedupe commits by SHA
+    if (type === "commit") {
+      if (seenShas.has(item.sha)) continue;
+      seenShas.add(item.sha);
+    }
+
+    // Skip quick-closed PRs
+    if (type === "pr" && isQuickClosed(item)) continue;
+
+    // Add to repo group
+    if (!byRepo.has(repoName)) {
+      byRepo.set(repoName, { count: 0, lastAt: null, lastUrl: null });
+    }
+    const entry = byRepo.get(repoName);
+    entry.count++;
+
+    const date = new Date(
+      type === "commit" 
+        ? (item.commit?.author?.date || item.commit?.committer?.date)
+        : item.created_at
+    );
+    if (!entry.lastAt || date > entry.lastAt) {
+      entry.lastAt = date;
+      entry.lastUrl = item.html_url;
+    }
+  }
+
+  return byRepo;
+}
+
+async function fetchRepoCommits(repoName, userLogin, from, to) {
+  try {
+    const commits = await restGetPaginated(`/repos/${repoName}/commits`, {
+      author: userLogin,
+      since: from.toISOString(),
+      until: to.toISOString(),
+    });
+
+    if (!commits.length) return null;
+
+    let lastAt = null, lastUrl = null;
+    for (const c of commits) {
+      const date = new Date(c.commit?.author?.date || c.commit?.committer?.date);
+      if (!lastAt || date > lastAt) {
+        lastAt = date;
+        lastUrl = c.html_url;
+      }
+    }
+    return { count: commits.length, lastAt, lastUrl };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRepoMeta(repoName) {
+  try {
+    const { data: repo } = await restGet(`/repos/${repoName}`);
+    const branch = repo.default_branch || "main";
+    
+    const { data: commits, headers } = await restGet(
+      `/repos/${repoName}/commits`,
+      { sha: branch, per_page: 1 }
+    );
+
+    const latestUrl = commits[0]?.html_url || null;
+    
+    // Parse total from Link header
+    const link = headers.get("link");
+    const lastMatch = link?.match(/page=(\d+)>; rel="last"/);
+    const totalCount = lastMatch ? parseInt(lastMatch[1], 10) : 1;
+
+    return { totalCount, latestUrl, isFork: repo.fork === true };
+  } catch {
+    return { totalCount: null, latestUrl: null, isFork: false };
+  }
+}
+
+async function findUserCommitUrl(repoName, userLogin, since) {
+  try {
+    const commits = await restGetPaginated(
+      `/repos/${repoName}/commits`,
+      { since: since.toISOString() },
+      5
+    );
+
+    for (const c of commits) {
+      if (c.author?.login === userLogin || c.committer?.login === userLogin) {
+        return c.html_url;
+      }
+      // Check co-author
+      const msg = (c.commit?.message || "").toLowerCase();
+      if (msg.includes("co-authored-by:") && msg.includes(userLogin.toLowerCase())) {
+        return c.html_url;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ============ Helpers ============
+
+function isQuickClosed(pr) {
+  if (!pr.created_at || !pr.closed_at || pr.merged_at) return false;
+  const duration = new Date(pr.closed_at) - new Date(pr.created_at);
+  return Number.isFinite(duration) && duration <= config.quickCloseMs;
+}
+
+function isExcluded(repoName) {
+  return config.excludedRepos.has(repoName.toLowerCase());
+}
+
+// ============ Contribution Aggregation ============
+
+function createRepoMap() {
+  const map = new Map();
+
   return {
-    from: getZonedStartOfDayUtc(probe, timeZone),
-    to: todayEnd,
-    windowLabel: `last ${windowDays} days`,
+    add(repoName, count, lastAt, lastUrl, kind) {
+      if (!repoName || count <= 0 || isExcluded(repoName)) return;
+
+      let entry = map.get(repoName);
+      if (!entry) {
+        entry = {
+          name: repoName,
+          total: 0,
+          lastAt: null,
+          lastUrl: null,
+          lastKind: null,
+          commitMeta: null,
+        };
+        map.set(repoName, entry);
+      }
+
+      entry.total += count;
+
+      const date = lastAt instanceof Date ? lastAt : new Date(lastAt);
+      if (!entry.lastAt || date > entry.lastAt) {
+        entry.lastAt = date;
+        entry.lastUrl = lastUrl;
+        entry.lastKind = kind;
+      }
+    },
+
+    entries() {
+      return Array.from(map.values()).filter((e) => e.total > 0);
+    },
+
+    get(name) {
+      return map.get(name);
+    },
   };
 }
 
-function formatDateForSearch(date) {
-  return date.toISOString().split("T")[0];
-}
+async function splitAndEnrich(repoMap, ownerLogin, from) {
+  const entries = repoMap.entries();
+  const own = [];
+  const other = [];
+  const prefix = `${ownerLogin.toLowerCase()}/`;
 
-// ============ Label helpers (unchanged) ============
-
-function labelFromIssueUrl(url) {
-  if (!url) return "issue";
-  const match = url.match(/\/issues\/(\d+)/);
-  return match ? `issue #${match[1]}` : "issue";
-}
-
-function labelFromPullUrl(url) {
-  if (!url) return "PR";
-  const match = url.match(/\/pull\/(\d+)/);
-  return match ? `PR #${match[1]}` : "PR";
-}
-
-function labelFromKind(kind, url) {
-  switch (kind) {
-    case "issue":
-      return labelFromIssueUrl(url);
-    case "pr":
-      return labelFromPullUrl(url);
-    default:
-      return "activity";
+  for (const entry of entries) {
+    if (entry.name.toLowerCase().startsWith(prefix)) {
+      own.push(entry);
+    } else {
+      other.push(entry);
+    }
   }
+
+  // Fetch metadata in parallel
+  const allReposNeedingMeta = entries.filter((e) => e.lastKind === "commit");
+  const metaResults = await Promise.all(
+    allReposNeedingMeta.map(async (e) => ({ name: e.name, meta: await fetchRepoMeta(e.name) }))
+  );
+
+  for (const { name, meta } of metaResults) {
+    const entry = repoMap.get(name);
+    if (entry && meta.totalCount != null) {
+      entry.commitMeta = meta;
+    }
+  }
+
+  // Filter forks from other repos (using meta we already fetched)
+  const filteredOther = other.filter((e) => !e.commitMeta?.isFork);
+
+  // For remaining other repos without commit meta, check if they're forks
+  const needForkCheck = filteredOther.filter((e) => e.lastKind !== "commit");
+  const forkResults = await Promise.all(
+    needForkCheck.map(async (e) => {
+      try {
+        const { data } = await restGet(`/repos/${e.name}`);
+        return { name: e.name, isFork: data.fork === true };
+      } catch {
+        return { name: e.name, isFork: false };
+      }
+    })
+  );
+  const forkSet = new Set(forkResults.filter((r) => r.isFork).map((r) => r.name));
+  const finalOther = filteredOther.filter((e) => !forkSet.has(e.name));
+
+  // Find user commit URLs for other repos (in parallel)
+  const otherCommitRepos = finalOther.filter((e) => e.lastKind === "commit");
+  const urlResults = await Promise.all(
+    otherCommitRepos.map(async (e) => ({
+      name: e.name,
+      url: await findUserCommitUrl(e.name, ownerLogin, from),
+    }))
+  );
+  for (const { name, url } of urlResults) {
+    const entry = repoMap.get(name);
+    if (entry && url) entry.userCommitUrl = url;
+  }
+
+  // Sort by recency, then total, then name
+  const sort = (arr) => arr.sort((a, b) => {
+    const timeDiff = (b.lastAt?.getTime() || 0) - (a.lastAt?.getTime() || 0);
+    if (timeDiff !== 0) return timeDiff;
+    if (b.total !== a.total) return b.total - a.total;
+    return a.name.localeCompare(b.name);
+  });
+
+  return { own: sort(own), other: sort(finalOther) };
 }
 
-// ============ Table builder (unchanged) ============
+// ============ Table Generation ============
 
-function buildTable(other, own, windowLabel, ownerLogin) {
+function buildTable(own, other, windowLabel, ownerLogin) {
   const lines = [
     "| Repo | Past month | Latest |",
     "| --- | ---: | --- |",
@@ -341,506 +473,140 @@ function buildTable(other, own, windowLabel, ownerLogin) {
 
   for (const section of sections) {
     if (!section.items.length) {
-      lines.push(
-        `| **${section.label}** | _No contributions in the ${windowLabel}._ | |`
-      );
+      lines.push(`| **${section.label}** | _No contributions in the ${windowLabel}._ | |`);
       continue;
     }
 
     lines.push(`| **${section.label}** |  |  |`);
 
     for (const item of section.items) {
-      const isOwnRepo = item.name.startsWith(`${ownerLogin}/`);
-      const displayName = isOwnRepo
-        ? item.name.slice(ownerLogin.length + 1)
-        : item.name;
+      const isOwn = item.name.toLowerCase().startsWith(`${ownerLogin.toLowerCase()}/`);
+      const displayName = isOwn ? item.name.split("/")[1] : item.name;
       const repoLink = `[${displayName}](https://github.com/${item.name})`;
-      let label = item.lastAt
-        ? labelFromKind(item.lastKind, item.lastUrl)
-        : "n/a";
-      let url = item.lastUrl;
 
+      let linkText, url;
       if (item.lastKind === "commit") {
-        label = item.repoCommitTotal != null ? `commit #${item.repoCommitTotal}` : "commits";
-        url = isOwnRepo
+        const total = item.commitMeta?.totalCount;
+        linkText = total != null ? `commit #${total}` : "commits";
+        url = isOwn
           ? `https://github.com/${item.name}/commits`
-          : item.userLatestCommitUrl || item.repoLatestCommitUrl || `https://github.com/${item.name}/commits`;
+          : item.userCommitUrl || item.commitMeta?.latestUrl || `https://github.com/${item.name}/commits`;
+      } else if (item.lastKind === "issue") {
+        const num = item.lastUrl?.match(/\/issues\/(\d+)/)?.[1];
+        linkText = num ? `issue #${num}` : "issue";
+        url = item.lastUrl;
+      } else if (item.lastKind === "pr") {
+        const num = item.lastUrl?.match(/\/pull\/(\d+)/)?.[1];
+        linkText = num ? `PR #${num}` : "PR";
+        url = item.lastUrl;
+      } else {
+        linkText = "activity";
+        url = item.lastUrl;
       }
 
-      const last = url ? `[${label}](${url})` : label;
-      lines.push(`| ${repoLink} | ${item.total} | ${last} |`);
+      const latest = url ? `[${linkText}](${url})` : linkText;
+      lines.push(`| ${repoLink} | ${item.total} | ${latest} |`);
     }
   }
 
   return lines.join("\n");
 }
 
-// ============ Contribution tracking ============
+// ============ README Update ============
 
-function isQuickClosedPullRequest(pr) {
-  if (!pr || !pr.created_at || !pr.closed_at) {
-    return false;
-  }
-  if (pr.merged_at) {
-    return false;
-  }
-  const created = new Date(pr.created_at).getTime();
-  const closed = new Date(pr.closed_at).getTime();
-  if (!Number.isFinite(created) || !Number.isFinite(closed)) {
-    return false;
-  }
-  return closed - created <= quickCloseMs;
-}
+function updateReadme(content) {
+  const readmePath = path.join(process.cwd(), "README.md");
+  const readme = fs.readFileSync(readmePath, "utf8");
+  
+  const startMarker = "<!-- GH-ACTIVITY-START -->";
+  const endMarker = "<!-- GH-ACTIVITY-END -->";
+  const startIdx = readme.indexOf(startMarker);
+  const endIdx = readme.indexOf(endMarker);
 
-function mergeContribution(map, repoName, count, occurredAt, url, kind) {
-  if (!repoName || count <= 0) {
-    return;
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+    throw new Error("README markers not found.");
   }
 
-  if (excludedRepos.has(repoName.toLowerCase())) {
-    return;
-  }
+  const updated = readme.slice(0, startIdx) +
+    `${startMarker}\n\n${content}\n\n${endMarker}` +
+    readme.slice(endIdx + endMarker.length);
 
-  let entry = map.get(repoName);
-  if (!entry) {
-    entry = {
-      name: repoName,
-      total: 0,
-      lastAt: null,
-      lastUrl: null,
-      lastKind: null,
-      repoCommitTotal: null,
-      repoLatestCommitUrl: null,
-      userLatestCommitUrl: null,
-    };
-    map.set(repoName, entry);
-  }
-
-  entry.total += count;
-
-  if (occurredAt) {
-    const date = occurredAt instanceof Date ? occurredAt : new Date(occurredAt);
-    if (!entry.lastAt || date > entry.lastAt) {
-      entry.lastAt = date;
-      entry.lastUrl = url || entry.lastUrl;
-      entry.lastKind = kind || entry.lastKind;
-    }
-  }
-}
-
-async function isRepoFork(repoName) {
-  try {
-    const { data } = await restGet(`/repos/${repoName}`);
-    return data.fork === true;
-  } catch (e) {
-    return false;
-  }
-}
-
-async function splitSections(map, ownerLogin) {
-  const own = [];
-  const other = [];
-  const prefix = `${ownerLogin.toLowerCase()}/`;
-
-  for (const item of map.values()) {
-    if (item.total <= 0) {
-      continue;
-    }
-
-    if (item.name.toLowerCase().startsWith(prefix)) {
-      own.push(item);
-    } else {
-      other.push(item);
-    }
-  }
-
-  // Filter out forks from "other people's repos" section
-  const filteredOther = [];
-  for (const item of other) {
-    const isFork = await isRepoFork(item.name);
-    if (!isFork) {
-      filteredOther.push(item);
-    }
-  }
-
-  const sorter = (a, b) => {
-    const aTime = a.lastAt ? a.lastAt.getTime() : 0;
-    const bTime = b.lastAt ? b.lastAt.getTime() : 0;
-    if (bTime !== aTime) {
-      return bTime - aTime;
-    }
-    if (b.total !== a.total) {
-      return b.total - a.total;
-    }
-    return a.name.localeCompare(b.name);
-  };
-
-  own.sort(sorter);
-  filteredOther.sort(sorter);
-
-  return { own, other: filteredOther };
-}
-
-// ============ REST API data fetchers ============
-
-async function fetchViewer() {
-  const { data } = await restGet("/user");
-  return { id: data.id, login: data.login, name: data.name };
-}
-
-async function fetchUserRepos() {
-  // Get all repos user has push access to (owner, collaborator, org member)
-  const repos = await restGetAllPages("/user/repos", {
-    affiliation: "owner,collaborator,organization_member",
-    sort: "pushed",
-    direction: "desc",
-  });
-
-  return repos
-    .filter((repo) => !repo.fork)
-    .filter((repo) => !excludedRepos.has(repo.full_name.toLowerCase()))
-    .map((repo) => ({
-      nameWithOwner: repo.full_name,
-      isPrivate: repo.private,
-    }));
-}
-
-async function fetchCommitsViaSearch(userLogin, fromDate, toDate) {
-  // Search commits by author in the date range
-  // Note: Search only covers repos the token has access to
-  const fromStr = formatDateForSearch(fromDate);
-  const toStr = formatDateForSearch(toDate);
-  const query = `author:${userLogin} committer-date:${fromStr}..${toStr}`;
-
-  const commits = await searchCommitsAllPages(query);
-
-  // Group by repo, tracking which commit SHAs we've seen to dedupe across forks
-  const seenShas = new Set();
-  const byRepo = new Map();
-
-  for (const commit of commits) {
-    const repoName = commit.repository?.full_name;
-    if (!repoName) continue;
-
-    // Skip forks - commits in forks are duplicates from upstream
-    if (commit.repository?.fork) continue;
-
-    // Skip if we've already counted this commit SHA (can appear in multiple forks)
-    const sha = commit.sha;
-    if (seenShas.has(sha)) continue;
-    seenShas.add(sha);
-
-    if (!byRepo.has(repoName)) {
-      byRepo.set(repoName, { count: 0, lastAt: null, lastUrl: null });
-    }
-    const entry = byRepo.get(repoName);
-    entry.count += 1;
-
-    const date = new Date(commit.commit?.author?.date || commit.commit?.committer?.date);
-    if (!entry.lastAt || date > entry.lastAt) {
-      entry.lastAt = date;
-      entry.lastUrl = commit.html_url;
-    }
-  }
-
-  return byRepo;
-}
-
-async function fetchIssuesViaSearch(userLogin, fromDate, toDate) {
-  const fromStr = formatDateForSearch(fromDate);
-  const toStr = formatDateForSearch(toDate);
-  const query = `author:${userLogin} type:issue created:${fromStr}..${toStr}`;
-
-  const issues = await searchAllPages(query);
-
-  // Group by repo
-  const byRepo = new Map();
-  for (const issue of issues) {
-    const repoUrl = issue.repository_url;
-    if (!repoUrl) continue;
-
-    // Extract repo name from URL: https://api.github.com/repos/owner/name
-    const match = repoUrl.match(/\/repos\/([^/]+\/[^/]+)$/);
-    if (!match) continue;
-    const repoName = match[1];
-
-    if (!byRepo.has(repoName)) {
-      byRepo.set(repoName, { count: 0, lastAt: null, lastUrl: null });
-    }
-    const entry = byRepo.get(repoName);
-    entry.count += 1;
-
-    const date = new Date(issue.created_at);
-    if (!entry.lastAt || date > entry.lastAt) {
-      entry.lastAt = date;
-      entry.lastUrl = issue.html_url;
-    }
-  }
-
-  return byRepo;
-}
-
-async function fetchPRsViaSearch(userLogin, fromDate, toDate) {
-  const fromStr = formatDateForSearch(fromDate);
-  const toStr = formatDateForSearch(toDate);
-  const query = `author:${userLogin} type:pr created:${fromStr}..${toStr}`;
-
-  const prs = await searchAllPages(query);
-
-  // Group by repo
-  const byRepo = new Map();
-  for (const pr of prs) {
-    // Skip quick-closed PRs
-    if (isQuickClosedPullRequest(pr)) continue;
-
-    const repoUrl = pr.repository_url;
-    if (!repoUrl) continue;
-
-    const match = repoUrl.match(/\/repos\/([^/]+\/[^/]+)$/);
-    if (!match) continue;
-    const repoName = match[1];
-
-    if (!byRepo.has(repoName)) {
-      byRepo.set(repoName, { count: 0, lastAt: null, lastUrl: null });
-    }
-    const entry = byRepo.get(repoName);
-    entry.count += 1;
-
-    const date = new Date(pr.created_at);
-    if (!entry.lastAt || date > entry.lastAt) {
-      entry.lastAt = date;
-      entry.lastUrl = pr.html_url;
-    }
-  }
-
-  return byRepo;
-}
-
-async function fetchRepoCommits(repoName, userLogin, fromDate, toDate) {
-  const [owner, repo] = repoName.split("/");
-  if (!owner || !repo) return { count: 0, lastAt: null, lastUrl: null };
-
-  try {
-    const commits = await restGetAllPages(`/repos/${owner}/${repo}/commits`, {
-      author: userLogin,
-      since: fromDate.toISOString(),
-      until: toDate.toISOString(),
-    });
-
-    if (!commits.length) {
-      return { count: 0, lastAt: null, lastUrl: null };
-    }
-
-    let lastAt = null;
-    let lastUrl = null;
-
-    for (const commit of commits) {
-      const date = new Date(commit.commit?.author?.date || commit.commit?.committer?.date);
-      if (!lastAt || date > lastAt) {
-        lastAt = date;
-        lastUrl = commit.html_url;
-      }
-    }
-
-    return { count: commits.length, lastAt, lastUrl };
-  } catch (e) {
-    // Repo might not be accessible
-    return { count: 0, lastAt: null, lastUrl: null };
-  }
-}
-
-async function fetchRepoCommitTotal(repoName) {
-  const [owner, repo] = repoName.split("/");
-  if (!owner || !repo) return { totalCount: null, latestUrl: null };
-
-  try {
-    // Get the default branch first
-    const { data: repoData } = await restGet(`/repos/${owner}/${repo}`);
-    const defaultBranch = repoData.default_branch || "main";
-
-    // Get commit count using the commits endpoint with per_page=1
-    // We'll use the Link header to find the last page
-    const response = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/commits?sha=${defaultBranch}&per_page=1`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/vnd.github+json",
-          "User-Agent": "tmustier-profile-activity",
-        },
-      }
-    );
-
-    if (!response.ok) {
-      return { totalCount: null, latestUrl: null };
-    }
-
-    const commits = await response.json();
-    const latestUrl = commits[0]?.html_url || null;
-
-    // Parse Link header for total count
-    const linkHeader = response.headers.get("link");
-    let totalCount = 1;
-
-    if (linkHeader) {
-      const lastMatch = linkHeader.match(/page=(\d+)>; rel="last"/);
-      if (lastMatch) {
-        totalCount = parseInt(lastMatch[1], 10);
-      }
-    }
-
-    return { totalCount, latestUrl };
-  } catch (e) {
-    return { totalCount: null, latestUrl: null };
-  }
-}
-
-async function findLatestUserCommit(repoName, userLogin, sinceDate) {
-  const [owner, repo] = repoName.split("/");
-  if (!owner || !repo) return null;
-
-  try {
-    const commits = await restGetAllPages(`/repos/${owner}/${repo}/commits`, {
-      since: sinceDate.toISOString(),
-    }, 5);
-
-    for (const commit of commits) {
-      const authorLogin = commit.author?.login;
-      const committerLogin = commit.committer?.login;
-      if (authorLogin === userLogin || committerLogin === userLogin) {
-        return commit.html_url;
-      }
-
-      // Check co-author
-      const message = commit.commit?.message || "";
-      if (message.toLowerCase().includes("co-authored-by:") &&
-          message.toLowerCase().includes(userLogin.toLowerCase())) {
-        return commit.html_url;
-      }
-    }
-
-    return null;
-  } catch (e) {
-    return null;
-  }
+  fs.writeFileSync(readmePath, updated);
 }
 
 // ============ Main ============
 
 async function main() {
-  console.log("Fetching user info...");
-  const viewer = await fetchViewer();
-  console.log(`User: ${viewer.login}`);
-
-  const fromStr = formatDateForSearch(from);
-  const toStr = formatDateForSearch(to);
-  console.log(`Date range: ${fromStr} to ${toStr}`);
-
-  const repoMap = new Map();
-
-  // Fetch all user repos (for private repo detection)
-  console.log("Fetching user repos...");
-  const userRepos = await fetchUserRepos();
-  const privateRepoNames = new Set(
-    userRepos.filter((r) => r.isPrivate).map((r) => r.nameWithOwner)
-  );
-  console.log(`Found ${userRepos.length} repos (${privateRepoNames.size} private)`);
-
-  // Fetch commits via search (covers public repos and private repos token has access to)
-  console.log("Searching commits...");
-  const commitsByRepo = await fetchCommitsViaSearch(viewer.login, from, to);
-  for (const [repoName, data] of commitsByRepo) {
-    mergeContribution(repoMap, repoName, data.count, data.lastAt, data.lastUrl, "commit");
-  }
-  console.log(`Found commits in ${commitsByRepo.size} repos`);
-
-  // Fetch issues via search
-  console.log("Searching issues...");
-  const issuesByRepo = await fetchIssuesViaSearch(viewer.login, from, to);
-  for (const [repoName, data] of issuesByRepo) {
-    mergeContribution(repoMap, repoName, data.count, data.lastAt, data.lastUrl, "issue");
-  }
-  console.log(`Found issues in ${issuesByRepo.size} repos`);
-
-  // Fetch PRs via search
-  console.log("Searching PRs...");
-  const prsByRepo = await fetchPRsViaSearch(viewer.login, from, to);
-  for (const [repoName, data] of prsByRepo) {
-    mergeContribution(repoMap, repoName, data.count, data.lastAt, data.lastUrl, "pr");
-  }
-  console.log(`Found PRs in ${prsByRepo.size} repos`);
-
-  // For private repos not caught by search, fetch commits directly
-  console.log("Checking private repos for additional commits...");
-  for (const repoName of privateRepoNames) {
-    if (!repoMap.has(repoName) || repoMap.get(repoName).lastKind !== "commit") {
-      const data = await fetchRepoCommits(repoName, viewer.login, from, to);
-      if (data.count > 0) {
-        mergeContribution(repoMap, repoName, data.count, data.lastAt, data.lastUrl, "commit");
-      }
-    }
-  }
-
-  // Get commit totals for repos with commit activity
-  console.log("Fetching commit totals...");
-  const commitEntries = Array.from(repoMap.values()).filter(
-    (entry) => entry.lastKind === "commit"
+  const { from, to, windowLabel } = buildTimeWindow(
+    new Date(),
+    config.timeZone,
+    config.days,
+    config.useCalendarMonth
   );
 
-  for (const entry of commitEntries) {
-    const meta = await fetchRepoCommitTotal(entry.name);
-    if (meta.totalCount != null) {
-      entry.repoCommitTotal = meta.totalCount;
-      entry.repoLatestCommitUrl = meta.latestUrl;
-    }
+  console.log(`Fetching activity for ${config.login} (${formatDate(from)} to ${formatDate(to)})`);
+
+  // Fetch user login and repos in parallel
+  const [userLogin, userRepos] = await Promise.all([
+    fetchUserLogin(),
+    fetchUserRepos(),
+  ]);
+  
+  const privateRepos = new Set(userRepos.filter((r) => r.isPrivate).map((r) => r.name));
+  console.log(`Found ${userRepos.length} repos (${privateRepos.size} private)`);
+
+  // Fetch all contributions via search in parallel
+  console.log("Searching contributions...");
+  const [commitsByRepo, issuesByRepo, prsByRepo] = await Promise.all([
+    fetchSearchItems(userLogin, from, to, "commit"),
+    fetchSearchItems(userLogin, from, to, "issue"),
+    fetchSearchItems(userLogin, from, to, "pr"),
+  ]);
+
+  console.log(`Found: ${commitsByRepo.size} repos with commits, ${issuesByRepo.size} with issues, ${prsByRepo.size} with PRs`);
+
+  // Aggregate contributions
+  const repoMap = createRepoMap();
+  
+  for (const [name, data] of commitsByRepo) {
+    repoMap.add(name, data.count, data.lastAt, data.lastUrl, "commit");
+  }
+  for (const [name, data] of issuesByRepo) {
+    repoMap.add(name, data.count, data.lastAt, data.lastUrl, "issue");
+  }
+  for (const [name, data] of prsByRepo) {
+    repoMap.add(name, data.count, data.lastAt, data.lastUrl, "pr");
   }
 
-  // For other people's repos, find the user's latest commit URL
-  console.log("Finding user commit URLs for other repos...");
-  const otherCommitRepos = commitEntries
-    .map((entry) => entry.name)
-    .filter((name) => !name.toLowerCase().startsWith(`${login.toLowerCase()}/`));
-
-  for (const repoName of otherCommitRepos) {
-    const entry = repoMap.get(repoName);
-    if (!entry) continue;
-    const latestUrl = await findLatestUserCommit(repoName, viewer.login, from);
-    if (latestUrl) {
-      entry.userLatestCommitUrl = latestUrl;
-    }
+  // Check private repos not caught by search
+  console.log("Checking private repos...");
+  const uncheckedPrivate = [...privateRepos].filter(
+    (name) => !repoMap.get(name) || repoMap.get(name).lastKind !== "commit"
+  );
+  
+  const privateResults = await Promise.all(
+    uncheckedPrivate.map(async (name) => ({
+      name,
+      data: await fetchRepoCommits(name, userLogin, from, to),
+    }))
+  );
+  
+  for (const { name, data } of privateResults) {
+    if (data) repoMap.add(name, data.count, data.lastAt, data.lastUrl, "commit");
   }
 
-  // Split and sort (filters forks from other repos)
-  console.log("Filtering forks from other repos...");
-  const { own, other } = await splitSections(repoMap, login);
+  // Split, enrich with metadata, and filter forks
+  console.log("Enriching metadata...");
+  const { own, other } = await splitAndEnrich(repoMap, config.login, from);
   console.log(`Results: ${own.length} own repos, ${other.length} other repos`);
 
-  // Generate table
-  const generated = buildTable(other, own, windowLabel, login);
-
-  // Update README
-  const readmePath = path.join(process.cwd(), "README.md");
-  const readme = fs.readFileSync(readmePath, "utf8");
-  const startMarker = "<!-- GH-ACTIVITY-START -->";
-  const endMarker = "<!-- GH-ACTIVITY-END -->";
-  const startIndex = readme.indexOf(startMarker);
-  const endIndex = readme.indexOf(endMarker);
-
-  if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
-    throw new Error("README markers not found.");
-  }
-
-  const block = `${startMarker}\n\n${generated}\n\n${endMarker}`;
-  const updated =
-    readme.slice(0, startIndex) +
-    block +
-    readme.slice(endIndex + endMarker.length);
-
-  fs.writeFileSync(readmePath, updated);
+  // Generate and update
+  const table = buildTable(own, other, windowLabel, config.login);
+  updateReadme(table);
   console.log("README updated.");
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
+main().catch((err) => {
+  console.error(err.message || err);
   process.exit(1);
 });
