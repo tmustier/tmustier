@@ -8,6 +8,11 @@
 ---
 
 ## Repositories
+### Terminal UIs and CLIs
+- [economist-tui](https://github.com/tmustier/economist-tui) – Read The Economist from your terminal using your subscription. Unofficial. Comes with CLI and SKILL.md
+- deliveroo-cli (coming soon) – Search and place Deliveroo UK orders from the terminal or via an agent using your account. Unofficial
+- ownership-chart (coming soon) – Recursively build complex legal entity structure charts from raw data. Optimized for UK Companies House data, includes scraping/cleaning
+- [dyson-cli](https://github.com/tmustier/dyson-cli) – Control your Dyson air purifier from the terminal
 ### Devtools
 - [long-task-harness](https://github.com/tmustier/long-task-harness) – Preserve context in long new projects with many coding agent sessions
 - [python-typing](https://github.com/tmustier/python-typing) – Migrate codebases to strict pyright typing
@@ -21,16 +26,11 @@
     - [/code](https://github.com/tmustier/pi-extensions/tree/main/code-actions) - copy/insert code snippets from your agent
     - [/raw-paste](https://github.com/tmustier/pi-extensions/tree/main/raw-paste) - paste editable text, not `[paste #1 +21 lines]`
 - [codex-tab](https://github.com/tmustier/codex-tab) – See when Codex sessions are running / done / 🚧 right in the terminal tab titles (macOS, Swift/libproc; cross-platform Python version: [codex-title](https://github.com/tmustier/codex-title))
-### Terminal UIs and CLIs
-- [economist-tui](https://github.com/tmustier/economist-tui) – Read The Economist from your terminal using your subscription. Unofficial. Comes with CLI and SKILL.md
-- [deliveroo-cli](https://github.com/tmustier/deliveroo-cli) (currently private) – Search and place Deliveroo UK orders from the terminal or via an agent using your account. Unofficial
-- [ownership-chart](https://github.com/tmustier/ownership-chart) (currently private) – Recursively build complex legal entity structure charts from raw data. Optimized for UK Companies House data, includes scraping/cleaning
-- [dyson-cli](https://github.com/tmustier/dyson-cli) – Control your Dyson air purifier from the terminal
 ### Skills
 - [web-search](https://github.com/tmustier/web-search) – Replace one-off search/scrape scripts with a single agent-friendly toolkit (fallbacks + evidence-first, safer defaults)
 - [skill-gmail-api](https://github.com/tmustier/skill-gmail-api) – Give your agents Gmail
 - [heypocket-reader](https://github.com/tmustier/heypocket-reader) – Fetch transcripts from your [Pocket](https://heypocket.com) device
-- [unified-inbox](https://github.com/tmustier/assistant/tree/main/skills/unified_inbox) (currently private) – Combine all digital interactions with a contact in one feed for agent context. Pluggable (out-of-box MacOS support for Whatsapp/iMessage/Gmail/Granola etc.)
+- unified-inbox (coming soon) – Combine all digital interactions with a contact in one feed for agent context. Pluggable (out-of-box MacOS support for Whatsapp/iMessage/Gmail/Granola etc.)
 
 ## What I've been up to this past month on GH
 

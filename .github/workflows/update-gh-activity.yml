@@ -20,15 +20,6 @@ jobs:
         with:
           node-version: 20
 
-      - name: Verify GH token
-        env:
-          GH_ACTIVITY_TOKEN: ${{ secrets.GH_ACTIVITY_TOKEN }}
-        run: |
-          echo "Token length: ${#GH_ACTIVITY_TOKEN}"
-          curl -s -o /dev/null -w "%{http_code}\n" \
-            -H "Authorization: Bearer $GH_ACTIVITY_TOKEN" \
-            https://api.github.com/user
-
       - name: Update README
         env:
           GH_ACTIVITY_TOKEN: ${{ secrets.GH_ACTIVITY_TOKEN }}
