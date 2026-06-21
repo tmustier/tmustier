@@ -275,9 +275,10 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 function buildBar(count, maxCount) {
-  const maxBarWidth = 28;
-  const filled = Math.max(1, Math.round((count / maxCount) * maxBarWidth));
-  return "█".repeat(filled) + "░".repeat(maxBarWidth - filled);
+  const maxBarWidth = 18;
+  const scaled = Math.sqrt(count / maxCount);
+  const filled = Math.max(1, Math.round(scaled * maxBarWidth));
+  return "█".repeat(filled);
 }
 
 function buildSection(entries, from, to) {
@@ -285,6 +286,7 @@ function buildSection(entries, from, to) {
   const toLabel = formatZonedDate(to, config.timeZone);
   const lines = [
     "**Where I'm spending my time**",
+    "",
     `*Authored commits on main in the past ${config.days} days (${fromLabel} to ${toLabel}, ${config.timeZone}):*`,
     "",
   ];
@@ -299,10 +301,14 @@ function buildSection(entries, from, to) {
 
   for (const entry of entries) {
     const label = `[${entry.displayName}](${entry.htmlUrl})${entry.isOrg ? " org" : ""}`;
-    lines.push(`| ${label} | ${entry.count} | ${buildBar(entry.count, maxCount)} |`);
+    lines.push(`| ${label} | ${entry.count} | \`${buildBar(entry.count, maxCount)}\` |`);
   }
 
-  lines.push("", `_${config.orgLogin} is aggregated across accessible ${config.orgLogin} repositories without listing private repo names._`);
+  lines.push(
+    "",
+    `_Bars use a square-root scale so the ${config.orgLogin} aggregate stays comparable without hiding smaller projects._`,
+    `_${config.orgLogin} is aggregated across accessible ${config.orgLogin} repositories without listing private repo names._`
+  );
 
   return lines.join("\n");
 }
