@@ -274,29 +274,35 @@ async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
-function buildSection(entries, orgCount, from, to) {
+function buildBar(count, maxCount) {
+  const maxBarWidth = 28;
+  const filled = Math.max(1, Math.round((count / maxCount) * maxBarWidth));
+  return "█".repeat(filled) + "░".repeat(maxBarWidth - filled);
+}
+
+function buildSection(entries, from, to) {
   const fromLabel = formatZonedDate(from, config.timeZone);
   const toLabel = formatZonedDate(to, config.timeZone);
   const lines = [
-    "## Where I'm spending my time",
-    "",
-    `Commits authored by ${config.login} on each repository's \`main\` branch in the past ${config.days} days (${fromLabel} to ${toLabel}, ${config.timeZone}).`,
-    `The ${config.orgLogin} line is an aggregate across accessible ${config.orgLogin} repositories without listing private repo names.`,
+    "**Where I'm spending my time**",
+    `*Authored commits on main in the past ${config.days} days (${fromLabel} to ${toLabel}, ${config.timeZone}):*`,
     "",
   ];
 
-  if (entries.length === 0 && orgCount === 0) {
+  if (entries.length === 0) {
     lines.push("No matching commits found.");
     return lines.join("\n");
   }
 
+  const maxCount = entries[0].count;
+  lines.push("| Repo | Commits | Activity |", "| --- | ---: | --- |");
+
   for (const entry of entries) {
-    lines.push(`- [${entry.displayName}](${entry.htmlUrl}): ${entry.count} commits`);
+    const label = `[${entry.displayName}](${entry.htmlUrl})${entry.isOrg ? " org" : ""}`;
+    lines.push(`| ${label} | ${entry.count} | ${buildBar(entry.count, maxCount)} |`);
   }
 
-  if (orgCount > 0) {
-    lines.push(`- [${config.orgLogin}](https://github.com/${config.orgLogin}) org: ${orgCount} commits`);
-  }
+  lines.push("", `_${config.orgLogin} is aggregated across accessible ${config.orgLogin} repositories without listing private repo names._`);
 
   return lines.join("\n");
 }
@@ -347,9 +353,31 @@ async function main() {
     .filter((entry) => entry.repo.owner.toLowerCase() === orgLoginLower)
     .reduce((sum, entry) => sum + entry.count, 0);
 
-  const entries = rows
+  const repoEntries = rows
     .filter((entry) => entry.repo.owner.toLowerCase() !== orgLoginLower)
     .filter((entry) => config.includePrivateRepoRows || !entry.repo.isPrivate)
+    .map((entry) => ({
+      count: entry.count,
+      htmlUrl: entry.repo.htmlUrl,
+      displayName: entry.repo.owner.toLowerCase() === ownerLoginLower
+        ? entry.repo.name
+        : entry.repo.fullName,
+      latestAt: entry.latestAt,
+      isOrg: false,
+    }));
+
+  const entries = [
+    ...(orgCount > 0
+      ? [{
+          count: orgCount,
+          htmlUrl: `https://github.com/${config.orgLogin}`,
+          displayName: config.orgLogin,
+          latestAt: new Date(0),
+          isOrg: true,
+        }]
+      : []),
+    ...repoEntries,
+  ]
     .sort((a, b) => {
       if (b.count !== a.count) {
         return b.count - a.count;
@@ -358,21 +386,14 @@ async function main() {
       if (timeDiff !== 0) {
         return timeDiff;
       }
-      return a.repo.fullName.localeCompare(b.repo.fullName);
+      return a.displayName.localeCompare(b.displayName);
     })
-    .slice(0, config.maxEntries)
-    .map((entry) => ({
-      count: entry.count,
-      htmlUrl: entry.repo.htmlUrl,
-      displayName: entry.repo.owner.toLowerCase() === ownerLoginLower
-        ? entry.repo.name
-        : entry.repo.fullName,
-    }));
+    .slice(0, config.maxEntries);
 
-  const section = buildSection(entries, orgCount, from, to);
+  const section = buildSection(entries, from, to);
   updateReadme(section);
   console.log(
-    `README updated with ${entries.length} repo rows and ${orgCount} ${config.orgLogin} org commits.`
+    `README updated with ${entries.length} visual rows and ${orgCount} ${config.orgLogin} org commits.`
   );
 }
 
