@@ -26,6 +26,4 @@
 | [pi-extensions](https://github.com/tmustier/pi-extensions) | 2 | `█` |
 | [read-agent-instructions](https://github.com/tmustier/read-agent-instructions) | 2 | `█` |
 
-_Bars use a square-root scale so the Nexcade aggregate stays comparable without hiding smaller projects._
-_Nexcade is aggregated across accessible Nexcade repositories without listing private repo names._
 <!-- SPENDING-TIME-END -->
