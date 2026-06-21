@@ -282,12 +282,10 @@ function buildBar(count, maxCount) {
 }
 
 function buildSection(entries, from, to) {
-  const fromLabel = formatZonedDate(from, config.timeZone);
-  const toLabel = formatZonedDate(to, config.timeZone);
   const lines = [
     "**Where I'm spending my time**",
     "",
-    `*Authored commits on main in the past ${config.days} days (${fromLabel} to ${toLabel}, ${config.timeZone}):*`,
+    `*Authored commits on main in the past ${config.days} days:*`,
     "",
   ];
 
@@ -304,11 +302,7 @@ function buildSection(entries, from, to) {
     lines.push(`| ${label} | ${entry.count} | \`${buildBar(entry.count, maxCount)}\` |`);
   }
 
-  lines.push(
-    "",
-    `_Bars use a square-root scale so the ${config.orgLogin} aggregate stays comparable without hiding smaller projects._`,
-    `_${config.orgLogin} is aggregated across accessible ${config.orgLogin} repositories without listing private repo names._`
-  );
+  lines.push("");
 
   return lines.join("\n");
 }
