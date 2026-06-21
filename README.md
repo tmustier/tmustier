@@ -12,8 +12,7 @@ Current open-source projects:
 <!-- SPENDING-TIME-START -->
 ## Where I'm spending my time
 
-Commits authored by tmustier on each repository's `main` branch in the past 30 days (2026-05-23 to 2026-06-21, Europe/London).
-The Nexcade line is an aggregate across accessible Nexcade repositories without listing private repo names.
+Authored commits on main in the past 30 days:
 
 - [pine-of-glass](https://github.com/tmustier/pine-of-glass): 78 commits
 - [gugu91/extensions](https://github.com/gugu91/extensions): 24 commits
