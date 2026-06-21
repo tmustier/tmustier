@@ -1,7 +1,7 @@
 ## Hi, I'm Thomas 👋
 🇬🇧 **London** · [𝕏](https://x.com/thomasmustier)· [mustier.ai](https://www.mustier.ai) · [LinkedIn](https://linkedin.com/in/thomasmustier)
 
-Current open-source projects:
+**Current open-source projects:**
 - [pine-of-glass](https://github.com/tmustier/pine-of-glass) is an experimental set of observability and context management extensions for the Pi coding agent.
   - [contextimate](https://github.com/tmustier/pine-of-glass/tree/main/extensions/pi-contextimate) breaks down loaded context, tools and skills.
   - [traceline](https://github.com/tmustier/pine-of-glass/tree/main/extensions/pi-traceline) provides an at-a-glance view of agent actions and tool results in each turn.
@@ -10,9 +10,8 @@ Current open-source projects:
 - [pi-for-excel](https://github.com/tmustier/pi-for-excel) is a multi-model extensible MS Excel agent sidebar.
 
 <!-- SPENDING-TIME-START -->
-## Where I'm spending my time
-
-Authored commits on main in the past 30 days:
+**Where I'm spending my time**
+*Authored commits on main in the past 30 days:*
 
 - [pine-of-glass](https://github.com/tmustier/pine-of-glass): 78 commits
 - [gugu91/extensions](https://github.com/gugu91/extensions): 24 commits
