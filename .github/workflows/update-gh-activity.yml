@@ -26,9 +26,9 @@ jobs:
           GH_ACTIVITY_USER: tmustier
           GH_ACTIVITY_DAYS: 30
           GH_ACTIVITY_TIMEZONE: Europe/London
-          GH_ACTIVITY_CALENDAR_MONTH: 1
+          GH_ACTIVITY_ORG: Nexcade
           GH_ACTIVITY_EXCLUDE: tmustier/tmustier
-          GH_ACTIVITY_PR_QUICK_CLOSE_MINUTES: 30
+          GH_ACTIVITY_MAX_ENTRIES: 12
         run: node .github/scripts/update-gh-activity.js
 
       - name: Commit changes
