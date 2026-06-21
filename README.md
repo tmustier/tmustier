@@ -9,5 +9,5 @@ Current open-source projects:
   - [contextimate](https://github.com/tmustier/pine-of-glass/tree/main/extensions/pi-contextimate) breaks down loaded context, tools and skills
   - [traceline](https://github.com/tmustier/pine-of-glass/tree/main/extensions/pi-traceline) provides an at-a-glance view of agent actions and tool results in the past turn
   - [cachemire](https://github.com/tmustier/pine-of-glass/tree/main/extensions/pi-cachemire) provides prefix- and TTL-aware cache notifications
-- [slack-bridge]([https://github.com/gugu91/extensions](https://github.com/gugu91/extensions/tree/main/slack-bridge)) is a slack- and tmux-based assistant with a multi-agent broker, thread routing, and inbox tools
+- [slack-bridge]((https://github.com/gugu91/extensions/tree/main/slack-bridge)) is a slack- and tmux-based assistant with a multi-agent broker, thread routing, and inbox tools
 - [pi-for-excel](https://github.com/tmustier/pi-for-excel) is a multi-model extensible MS Excel agent sidebar.
