@@ -11,6 +11,7 @@
 
 <!-- SPENDING-TIME-START -->
 **Where I'm spending my time**
+
 *Authored commits on main in the past 30 days (2026-05-23 to 2026-06-21, Europe/London):*
 
 | Repo | Commits | Activity |
