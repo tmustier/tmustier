@@ -19,7 +19,8 @@ Find me here: 🇬🇧 **London** · [𝕏](https://x.com/thomasmustier)· [must
 
 | Repo | Commits | Activity |
 | --- | ---: | --- |
-| [Nexcade](https://github.com/Nexcade) org | 957 | `██████████████████` |
+| [Nexcade](https://github.com/Nexcade) org | 958 | `██████████████████` |
+| Private repositories | 170 | `████████` |
 | [pine-of-glass](https://github.com/tmustier/pine-of-glass) | 101 | `██████` |
 | [gugu91/pinet](https://github.com/gugu91/pinet) | 79 | `█████` |
 | [pi-for-excel](https://github.com/tmustier/pi-for-excel) | 54 | `████` |
@@ -31,5 +32,11 @@ Find me here: 🇬🇧 **London** · [𝕏](https://x.com/thomasmustier)· [must
 | [claude-to-pi](https://github.com/tmustier/claude-to-pi) | 12 | `██` |
 | [pi-queue-steer](https://github.com/tmustier/pi-queue-steer) | 11 | `██` |
 | [superhuman-mail](https://github.com/tmustier/superhuman-mail) | 8 | `██` |
+| [pi-session-hud](https://github.com/tmustier/pi-session-hud) | 6 | `█` |
+| [pi-auto-compact](https://github.com/tmustier/pi-auto-compact) | 6 | `█` |
+| [nicobailon/pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) | 3 | `█` |
+| [earendil-works/pi](https://github.com/earendil-works/pi) | 2 | `█` |
+| [html-editor](https://github.com/tmustier/html-editor) | 1 | `█` |
+| [github-media-attachment-smoke-test](https://github.com/tmustier/github-media-attachment-smoke-test) | 1 | `█` |
 
 <!-- SPENDING-TIME-END -->

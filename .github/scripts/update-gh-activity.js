@@ -58,7 +58,6 @@ const config = {
   requireOrgPrivateAccess: ["1", "true", "yes"].includes(
     (process.env.GH_ACTIVITY_REQUIRE_ORG_PRIVATE_ACCESS || "").toLowerCase()
   ),
-  maxEntries: Number.parseInt(process.env.GH_ACTIVITY_MAX_ENTRIES || "12", 10),
   includePrivateRepoRows: ["1", "true", "yes"].includes(
     (process.env.GH_ACTIVITY_INCLUDE_PRIVATE_REPOS || "").toLowerCase()
   ),
@@ -82,11 +81,6 @@ if (!Number.isFinite(config.days) || config.days <= 0) {
   console.error("GH_ACTIVITY_DAYS must be a positive integer.");
   process.exit(1);
 }
-if (!Number.isFinite(config.maxEntries) || config.maxEntries <= 0) {
-  console.error("GH_ACTIVITY_MAX_ENTRIES must be a positive integer.");
-  process.exit(1);
-}
-
 async function restGet(endpoint, params = {}) {
   const url = new URL(endpoint, "https://api.github.com");
   for (const [key, value] of Object.entries(params)) {
@@ -110,6 +104,30 @@ async function restGet(endpoint, params = {}) {
   }
 
   return { data: await response.json(), headers: response.headers };
+}
+
+async function graphql(query, variables = {}) {
+  const response = await fetch("https://api.github.com/graphql", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.token}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+      "User-Agent": "tmustier-profile-spending-time",
+    },
+    body: JSON.stringify({ query, variables }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`GitHub GraphQL API ${response.status}: ${body}`);
+  }
+
+  const payload = await response.json();
+  if (payload.errors?.length) {
+    throw new Error(`GitHub GraphQL API: ${JSON.stringify(payload.errors)}`);
+  }
+  return payload.data;
 }
 
 async function restGetPaginated(endpoint, params = {}) {
@@ -181,6 +199,64 @@ function isExcluded(repo) {
   return config.excludedRepos.has(repo.fullName.toLowerCase());
 }
 
+async function fetchContributedRepos() {
+  const repos = [];
+  let cursor = null;
+
+  while (true) {
+    const data = await graphql(
+      `query($login: String!, $after: String) {
+        user(login: $login) {
+          repositoriesContributedTo(
+            first: 100
+            after: $after
+            contributionTypes: [COMMIT]
+            includeUserRepositories: true
+            orderBy: { field: PUSHED_AT, direction: DESC }
+          ) {
+            nodes {
+              nameWithOwner
+              name
+              url
+              isFork
+              isPrivate
+              owner { login }
+            }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }`,
+      { login: config.login, after: cursor }
+    );
+
+    const connection = data.user?.repositoriesContributedTo;
+    if (!connection) {
+      throw new Error(`Could not list repositories contributed to by ${config.login}.`);
+    }
+
+    for (const repo of connection.nodes || []) {
+      if (!repo?.nameWithOwner) {
+        continue;
+      }
+      repos.push({
+        fullName: repo.nameWithOwner,
+        owner: repo.owner?.login || repo.nameWithOwner.split("/")[0] || "",
+        name: repo.name,
+        htmlUrl: repo.url || `https://github.com/${repo.nameWithOwner}`,
+        isFork: repo.isFork === true,
+        isPrivate: repo.isPrivate === true,
+      });
+    }
+
+    if (!connection.pageInfo?.hasNextPage) {
+      break;
+    }
+    cursor = connection.pageInfo.endCursor;
+  }
+
+  return repos;
+}
+
 async function fetchCandidateRepos() {
   const byName = new Map();
   const orgAccess = {
@@ -191,16 +267,22 @@ async function fetchCandidateRepos() {
     error: null,
   };
 
-  const userRepos = await restGetPaginated("/user/repos", {
-    affiliation: "owner,collaborator,organization_member",
-    sort: "pushed",
-    direction: "desc",
-  });
+  const [userRepos, contributedRepos] = await Promise.all([
+    restGetPaginated("/user/repos", {
+      affiliation: "owner,collaborator,organization_member",
+      sort: "pushed",
+      direction: "desc",
+    }),
+    fetchContributedRepos(),
+  ]);
   for (const repo of userRepos) {
     const normalized = normalizeRepo(repo);
     if (normalized.fullName) {
       byName.set(normalized.fullName.toLowerCase(), normalized);
     }
+  }
+  for (const repo of contributedRepos) {
+    byName.set(repo.fullName.toLowerCase(), repo);
   }
 
   try {
@@ -232,7 +314,7 @@ async function fetchCandidateRepos() {
     (repo) => !repo.isFork && !isExcluded(repo)
   );
 
-  return { repos, orgAccess };
+  return { repos, orgAccess, contributedRepoCount: contributedRepos.length };
 }
 
 async function countMainCommits(repo, from, to) {
@@ -319,7 +401,10 @@ function buildSection(entries, from, to) {
   lines.push("| Repo | Commits | Activity |", "| --- | ---: | --- |");
 
   for (const entry of entries) {
-    const label = `[${entry.displayName}](${entry.htmlUrl})${entry.isOrg ? " org" : ""}`;
+    const name = entry.htmlUrl
+      ? `[${entry.displayName}](${entry.htmlUrl})`
+      : entry.displayName;
+    const label = `${name}${entry.isOrg ? " org" : ""}`;
     lines.push(`| ${label} | ${entry.count} | \`${buildBar(entry.count, maxCount)}\` |`);
   }
 
@@ -350,43 +435,23 @@ function updateReadme(section) {
   fs.writeFileSync(readmePath, `${trimmed}\n\n${replacement}\n`);
 }
 
-async function main() {
-  const { from, to } = buildTimeWindow(new Date(), config.timeZone, config.days);
-  console.log(
-    `Counting main-branch commits authored by ${config.login} from ${formatZonedDate(from, config.timeZone)} to ${formatZonedDate(to, config.timeZone)} (${config.timeZone})`
-  );
-
-  const { repos, orgAccess } = await fetchCandidateRepos();
-  if (config.requireOrgPrivateAccess) {
-    if (!orgAccess.listed) {
-      throw new Error(
-        `GH_ACTIVITY_REQUIRE_ORG_PRIVATE_ACCESS is set, but ${config.orgLogin} repos could not be listed: ${orgAccess.error || "unknown error"}`
-      );
-    }
-    if (orgAccess.nonForkPrivateRepoCount === 0) {
-      throw new Error(
-        `GH_ACTIVITY_REQUIRE_ORG_PRIVATE_ACCESS is set, but GH_ACTIVITY_TOKEN cannot see any private non-fork repos in ${config.orgLogin}. Refusing to publish a misleading activity table.`
-      );
-    }
-  }
-  console.log(
-    `Checking ${repos.length} accessible non-fork repos (${orgAccess.nonForkPrivateRepoCount} private non-fork ${config.orgLogin} repos visible).`
-  );
-
-  const counted = await mapWithConcurrency(repos, 6, async (repo) => {
-    const result = await countMainCommits(repo, from, to);
-    if (!result) {
-      return null;
-    }
-    return { repo, ...result };
-  });
-
-  const rows = counted.filter(Boolean);
+function buildEntries(rows) {
   const orgLoginLower = config.orgLogin.toLowerCase();
   const ownerLoginLower = config.login.toLowerCase();
-  const orgCount = rows
-    .filter((entry) => entry.repo.owner.toLowerCase() === orgLoginLower)
-    .reduce((sum, entry) => sum + entry.count, 0);
+  const orgRows = rows.filter(
+    (entry) => entry.repo.owner.toLowerCase() === orgLoginLower
+  );
+  const orgCount = orgRows.reduce((sum, entry) => sum + entry.count, 0);
+  const hiddenPrivateRows = rows.filter(
+    (entry) =>
+      entry.repo.owner.toLowerCase() !== orgLoginLower &&
+      entry.repo.isPrivate &&
+      !config.includePrivateRepoRows
+  );
+  const hiddenPrivateCount = hiddenPrivateRows.reduce(
+    (sum, entry) => sum + entry.count,
+    0
+  );
 
   const repoEntries = rows
     .filter((entry) => entry.repo.owner.toLowerCase() !== orgLoginLower)
@@ -401,29 +466,72 @@ async function main() {
       isOrg: false,
     }));
 
-  const entries = [
+  return [
     ...(orgCount > 0
       ? [{
           count: orgCount,
           htmlUrl: `https://github.com/${config.orgLogin}`,
           displayName: config.orgLogin,
-          latestAt: new Date(0),
+          latestAt: new Date(Math.max(...orgRows.map((entry) => entry.latestAt.getTime()))),
           isOrg: true,
         }]
       : []),
+    ...(hiddenPrivateCount > 0
+      ? [{
+          count: hiddenPrivateCount,
+          htmlUrl: null,
+          displayName: "Private repositories",
+          latestAt: new Date(Math.max(...hiddenPrivateRows.map((entry) => entry.latestAt.getTime()))),
+          isOrg: false,
+        }]
+      : []),
     ...repoEntries,
-  ]
-    .sort((a, b) => {
-      if (b.count !== a.count) {
-        return b.count - a.count;
-      }
-      const timeDiff = b.latestAt.getTime() - a.latestAt.getTime();
-      if (timeDiff !== 0) {
-        return timeDiff;
-      }
-      return a.displayName.localeCompare(b.displayName);
-    })
-    .slice(0, config.maxEntries);
+  ].sort((a, b) => {
+    if (b.count !== a.count) {
+      return b.count - a.count;
+    }
+    const timeDiff = b.latestAt.getTime() - a.latestAt.getTime();
+    if (timeDiff !== 0) {
+      return timeDiff;
+    }
+    return a.displayName.localeCompare(b.displayName);
+  });
+}
+
+async function main() {
+  const { from, to } = buildTimeWindow(new Date(), config.timeZone, config.days);
+  console.log(
+    `Counting main-branch commits authored by ${config.login} from ${formatZonedDate(from, config.timeZone)} to ${formatZonedDate(to, config.timeZone)} (${config.timeZone})`
+  );
+
+  const { repos, orgAccess, contributedRepoCount } = await fetchCandidateRepos();
+  if (config.requireOrgPrivateAccess) {
+    if (!orgAccess.listed) {
+      throw new Error(
+        `GH_ACTIVITY_REQUIRE_ORG_PRIVATE_ACCESS is set, but ${config.orgLogin} repos could not be listed: ${orgAccess.error || "unknown error"}`
+      );
+    }
+    if (orgAccess.nonForkPrivateRepoCount === 0) {
+      throw new Error(
+        `GH_ACTIVITY_REQUIRE_ORG_PRIVATE_ACCESS is set, but GH_ACTIVITY_TOKEN cannot see any private non-fork repos in ${config.orgLogin}. Refusing to publish a misleading activity table.`
+      );
+    }
+  }
+  console.log(
+    `Checking ${repos.length} accessible non-fork repos (${contributedRepoCount} discovered from contribution history; ${orgAccess.nonForkPrivateRepoCount} private non-fork ${config.orgLogin} repos visible).`
+  );
+
+  const counted = await mapWithConcurrency(repos, 6, async (repo) => {
+    const result = await countMainCommits(repo, from, to);
+    if (!result) {
+      return null;
+    }
+    return { repo, ...result };
+  });
+
+  const rows = counted.filter(Boolean);
+  const entries = buildEntries(rows);
+  const orgCount = entries.find((entry) => entry.isOrg)?.count || 0;
 
   const section = buildSection(entries, from, to);
   updateReadme(section);
@@ -432,7 +540,15 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(error.message || error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.message || error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  buildEntries,
+  buildSection,
+  fetchContributedRepos,
+};
