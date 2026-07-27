@@ -4,10 +4,13 @@ const test = require("node:test");
 process.env.GH_ACTIVITY_TOKEN = "test-token";
 process.env.GH_ACTIVITY_USER = "tmustier";
 process.env.GH_ACTIVITY_ORG = "Nexcade";
+// This legacy setting must not be able to expose private repository rows.
+process.env.GH_ACTIVITY_INCLUDE_PRIVATE_REPOS = "true";
 
 const {
   buildEntries,
   buildSection,
+  countMainCommits,
   fetchContributedRepos,
 } = require("./update-gh-activity");
 
@@ -76,6 +79,41 @@ test("fetchContributedRepos paginates through the complete contribution history"
   assert.equal(repos.length, 101);
   assert.deepEqual(cursors, [null, "page-2"]);
   assert.equal(repos.at(-1).fullName, "earendil-works/pi");
+});
+
+test("private repository API failures never expose names or response bodies", async (t) => {
+  const originalFetch = global.fetch;
+  const originalWarn = console.warn;
+  const warnings = [];
+  const privateName = "private-owner/highly-sensitive-repository";
+
+  global.fetch = async () => ({
+    ok: false,
+    status: 500,
+    text: async () => `Internal error while reading ${privateName}`,
+  });
+  console.warn = (message) => warnings.push(message);
+  t.after(() => {
+    global.fetch = originalFetch;
+    console.warn = originalWarn;
+  });
+
+  const result = await countMainCommits(
+    {
+      fullName: privateName,
+      owner: "private-owner",
+      name: "highly-sensitive-repository",
+      htmlUrl: `https://github.com/${privateName}`,
+      isFork: false,
+      isPrivate: true,
+    },
+    new Date("2026-06-28T00:00:00Z"),
+    new Date("2026-07-27T23:59:59Z")
+  );
+
+  assert.equal(result, null);
+  assert.deepEqual(warnings, ["Could not count a private repository."]);
+  assert.doesNotMatch(warnings.join("\n"), /private-owner|highly-sensitive/);
 });
 
 test("buildEntries keeps every public row and anonymously aggregates private rows", () => {

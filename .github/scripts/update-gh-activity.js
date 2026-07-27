@@ -58,9 +58,6 @@ const config = {
   requireOrgPrivateAccess: ["1", "true", "yes"].includes(
     (process.env.GH_ACTIVITY_REQUIRE_ORG_PRIVATE_ACCESS || "").toLowerCase()
   ),
-  includePrivateRepoRows: ["1", "true", "yes"].includes(
-    (process.env.GH_ACTIVITY_INCLUDE_PRIVATE_REPOS || "").toLowerCase()
-  ),
   excludedRepos: new Set(
     (process.env.GH_ACTIVITY_EXCLUDE || "")
       .split(/[\n,]/)
@@ -353,7 +350,11 @@ async function countMainCommits(repo, from, to) {
     ) {
       return null;
     }
-    console.warn(`Could not count ${repo.fullName}: ${message}`);
+    if (repo.isPrivate) {
+      console.warn("Could not count a private repository.");
+    } else {
+      console.warn(`Could not count ${repo.fullName}: ${message}`);
+    }
     return null;
   }
 }
@@ -445,8 +446,7 @@ function buildEntries(rows) {
   const hiddenPrivateRows = rows.filter(
     (entry) =>
       entry.repo.owner.toLowerCase() !== orgLoginLower &&
-      entry.repo.isPrivate &&
-      !config.includePrivateRepoRows
+      entry.repo.isPrivate
   );
   const hiddenPrivateCount = hiddenPrivateRows.reduce(
     (sum, entry) => sum + entry.count,
@@ -455,7 +455,7 @@ function buildEntries(rows) {
 
   const repoEntries = rows
     .filter((entry) => entry.repo.owner.toLowerCase() !== orgLoginLower)
-    .filter((entry) => config.includePrivateRepoRows || !entry.repo.isPrivate)
+    .filter((entry) => !entry.repo.isPrivate)
     .map((entry) => ({
       count: entry.count,
       htmlUrl: entry.repo.htmlUrl,
@@ -550,5 +550,6 @@ if (require.main === module) {
 module.exports = {
   buildEntries,
   buildSection,
+  countMainCommits,
   fetchContributedRepos,
 };
