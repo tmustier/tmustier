@@ -1,0 +1,3 @@
+# Require review for workflow/script changes that can access secrets
+/.github/workflows/* @tmustier
+/.github/scripts/* @tmustier
