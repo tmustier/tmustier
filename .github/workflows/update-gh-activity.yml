@@ -1,0 +1,54 @@
+name: Update GH activity
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-gh-activity
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Update README
+        env:
+          GH_ACTIVITY_TOKEN: ${{ secrets.GH_ACTIVITY_TOKEN }}
+          GH_ACTIVITY_USER: tmustier
+          GH_ACTIVITY_DAYS: 30
+          GH_ACTIVITY_TIMEZONE: Europe/London
+          GH_ACTIVITY_ORG: Nexcade
+          GH_ACTIVITY_REQUIRE_ORG_PRIVATE_ACCESS: 1
+          GH_ACTIVITY_EXCLUDE: tmustier/tmustier
+        run: node .github/scripts/update-gh-activity.js
+
+      - name: Commit changes
+        run: |
+          if git diff --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          last_message=$(git log -1 --pretty=%s)
+          if [ "$last_message" = "Update GH activity" ]; then
+            git commit --amend --no-edit
+            git push --force-with-lease
+          else
+            git commit -m "Update GH activity"
+            git push
+          fi
