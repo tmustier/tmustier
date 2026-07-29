@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.tmustier.profile-update</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>-lc</string>
+      <string>/Users/thomasmustier/tmustier-profile/scripts/update-profile-local.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+      <key>Hour</key>
+      <integer>6</integer>
+      <key>Minute</key>
+      <integer>5</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/thomasmustier/Library/Logs/profile-update.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/thomasmustier/Library/Logs/profile-update.error.log</string>
+  </dict>
+</plist>
